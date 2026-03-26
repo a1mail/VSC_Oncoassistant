@@ -27,6 +27,48 @@ export interface AISettings {
   enableFallback: boolean;
 }
 
+const DEFAULT_GEMINI_API_KEY =
+  (process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY || '').trim();
+
+function isViableProfile(profile: EnhancedAIProfile): boolean {
+  if (profile.providerType === 'local') {
+    return !!profile.baseUrl?.trim();
+  }
+  return !!profile.apiKey?.trim() && !!profile.baseUrl?.trim();
+}
+
+function buildEnvFallbackProfile(): EnhancedAIProfile | null {
+  if (!DEFAULT_GEMINI_API_KEY) {
+    return null;
+  }
+
+  const template = ProviderFactory.getProviderTemplate('gemini');
+
+  return {
+    id: 'env-gemini',
+    name: 'Google Gemini (ENV)',
+    providerType: 'gemini',
+    apiKey: DEFAULT_GEMINI_API_KEY,
+    baseUrl: (template.baseUrl as string) || 'https://generativelanguage.googleapis.com/v1beta/openai/',
+    modelName: (template.modelName as string) || 'gemini-2.0-flash',
+    metrics: {
+      successCount: 0,
+      failureCount: 0,
+      isHealthy: true,
+    },
+    capabilities: template.capabilities || {
+      supportsImages: true,
+      supportsJSON: false,
+      supportsSystemPrompt: true,
+      supportsVision: true,
+      maxTokens: 8192,
+      contextWindow: 1000000,
+    },
+    isActive: true,
+    priority: 8,
+  };
+}
+
 // Helper to remove empty fields recursively to save tokens
 function removeEmptyFields(obj: any): any {
   if (Array.isArray(obj)) {
@@ -55,6 +97,57 @@ function cleanJson(text: string): string {
   }
   
   return cleaned;
+}
+
+const ABBREVIATIONS: Record<string, string> = {
+  ECOG: 'шкала общего состояния Eastern Cooperative Oncology Group',
+  TNM: 'классификация опухоли по размеру, лимфоузлам и метастазам',
+  МКБ: 'Международная классификация болезней',
+  'МКБ-10': 'Международная классификация болезней, 10 пересмотр',
+  КР: 'клинические рекомендации',
+  ИГХ: 'иммуногистохимическое исследование',
+  ER: 'эстрогеновые рецепторы',
+  PR: 'прогестероновые рецепторы',
+  HER2: 'рецептор эпидермального фактора роста человека 2 типа',
+  Ki67: 'индекс пролиферативной активности опухоли',
+  'ПЭТ-КТ': 'позитронно-эмиссионная томография, совмещенная с компьютерной томографией',
+  КТ: 'компьютерная томография',
+  МРТ: 'магнитно-резонансная томография',
+  УЗИ: 'ультразвуковое исследование',
+  СОЭ: 'скорость оседания эритроцитов',
+  Hb: 'гемоглобин',
+  WBC: 'лейкоциты',
+  PLT: 'тромбоциты',
+};
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function annotateAbbreviationsInText(text: string): string {
+  return Object.entries(ABBREVIATIONS).reduce((acc, [abbr, full]) => {
+    const pattern = new RegExp(
+      `(^|[^\\p{L}\\p{N}_])(${escapeRegExp(abbr)})(?!\\s*\\()(?=$|[^\\p{L}\\p{N}_])`,
+      'u'
+    );
+    return acc.replace(pattern, `$1${abbr} (${full})`);
+  }, text);
+}
+
+function annotateAbbreviations(value: any): any {
+  if (typeof value === 'string') {
+    return annotateAbbreviationsInText(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(annotateAbbreviations);
+  }
+  if (value && typeof value === 'object') {
+    return Object.entries(value).reduce<Record<string, any>>((result, [key, nested]) => {
+      result[key] = annotateAbbreviations(nested);
+      return result;
+    }, {});
+  }
+  return value;
 }
 
 /**
@@ -134,6 +227,17 @@ function syncProfilesFromService(): void {
   // Only sync if there are saved profiles
   if (savedProfiles.length === 0) {
     console.warn('⚠️ No saved profiles found - will use default');
+    const currentSettings = enhancedAIService.getSettings();
+    if (!currentSettings.profiles.some(isViableProfile)) {
+      const envFallback = buildEnvFallbackProfile();
+      if (envFallback) {
+        enhancedAIService.saveSettings({
+          ...currentSettings,
+          profiles: [envFallback],
+          activeProfileId: envFallback.id,
+        });
+      }
+    }
     return;
   }
 
@@ -163,6 +267,17 @@ function syncProfilesFromService(): void {
 
   if (convertedProfiles.length === 0) {
     console.error('❌ No profiles could be converted:', errors);
+    const currentSettings = enhancedAIService.getSettings();
+    if (!currentSettings.profiles.some(isViableProfile)) {
+      const envFallback = buildEnvFallbackProfile();
+      if (envFallback) {
+        enhancedAIService.saveSettings({
+          ...currentSettings,
+          profiles: [envFallback],
+          activeProfileId: envFallback.id,
+        });
+      }
+    }
     return;
   }
 
@@ -187,7 +302,19 @@ function syncProfilesFromService(): void {
   // Update enhancedAIService ONLY with converted profiles
   // Remove old default profiles that don't have valid config
   const settings = enhancedAIService.getSettings();
-  const mergedProfiles = convertedProfiles; // Use ONLY converted profiles, not the old ones
+  const mergedProfiles = convertedProfiles;
+  if (!mergedProfiles.some(isViableProfile)) {
+    console.warn('⚠️ Converted profiles are not viable; keeping current settings');
+    const envFallback = buildEnvFallbackProfile();
+    if (envFallback) {
+      enhancedAIService.saveSettings({
+        ...settings,
+        profiles: [envFallback],
+        activeProfileId: envFallback.id,
+      });
+    }
+    return;
+  }
   
   console.log(`\n📝 Updating enhancedAIService with ${mergedProfiles.length} profiles`);
   
@@ -224,7 +351,7 @@ function migrateToEnhanced(legacySettings: AISettings): void {
       id: profile.id,
       name: profile.name,
       providerType: profile.provider === 'gemini' ? 'gemini' : 'openai_compatible',
-      apiKey: profile.apiKey,
+      apiKey: profile.apiKey || (profile.provider === 'gemini' ? DEFAULT_GEMINI_API_KEY : undefined),
       baseUrl: profile.baseUrl || template.baseUrl || '',
       modelName: profile.modelName || template.modelName || '',
       metrics: {
@@ -295,6 +422,8 @@ export const aiService = {
       id: 'default-gemini',
       name: 'Google Gemini (По умолчанию)',
       provider: 'gemini',
+      apiKey: DEFAULT_GEMINI_API_KEY,
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
       modelName: 'gemini-2.0-flash'
     };
 
@@ -352,6 +481,7 @@ INSTRUCTIONS:
 2. Include any comorbidities (concomitant diseases) listed in the anamnesis as part of the full diagnosis structure, following ICD-10 standards.
 3. Identify and list any complications of the primary disease if the data suggests them.
 4. CRITICAL: ALL TEXT VALUES IN THE JSON RESPONSE MUST BE IN RUSSIAN LANGUAGE (РУССКИЙ ЯЗЫК).
+5. IMPORTANT: при первом упоминании медицинского сокращения укажите расшифровку в скобках.
 
 Provide the output in the following JSON format:
 {
@@ -414,6 +544,7 @@ INSTRUCTIONS:
 6. If contraindications found, list them in "warnings" field.
 7. Provide DETAILED PRESCRIPTION LIST with all details.
 8. CRITICAL: ALL TEXT VALUES IN JSON MUST BE IN RUSSIAN (РУССКИЙ ЯЗЫК).
+9. IMPORTANT: при первом упоминании медицинского сокращения укажите расшифровку в скобках.
 
 Provide output in JSON format with treatment_strategy, primary_treatment, regimen, prescriptions, recommendations, warnings, cr_source.
 Do not use Markdown, just raw JSON.
@@ -433,7 +564,12 @@ Do not use Markdown, just raw JSON.
         throw new Error(response.error || 'AI generation failed');
       }
 
-      return JSON.parse(cleanJson(response.content));
+      const content = response.content || '';
+      if (!content.trim()) {
+        throw new Error('Empty AI response');
+      }
+      const parsed = JSON.parse(cleanJson(content));
+      return annotateAbbreviations(parsed);
     } catch (error: any) {
       throw new Error(error.message || 'Failed to execute prompt');
     }
