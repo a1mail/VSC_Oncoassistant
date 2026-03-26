@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React from 'react';
 import { Button } from '@/components/ui/button';
 import { useConsultation } from '@/context/ConsultationContext';
 import { Copy, Printer, X } from 'lucide-react';
@@ -8,59 +8,345 @@ interface ReportDialogProps {
   onClose: () => void;
 }
 
+const sectionLabels: Record<string, Record<string, string>> = {
+  anamnesis: {
+    complaints: 'Жалобы',
+    complaints_detail: 'Детализация жалоб',
+    anamnesis_morbi: 'Anamnesis Morbi',
+    heredity: 'Наследственность',
+    allergies: 'Аллергический анамнез',
+    smoking: 'Курение',
+    alcohol: 'Алкоголь',
+    comorbidities: 'Сопутствующие заболевания',
+    current_medications: 'Постоянная терапия',
+    occupation_desc: 'Профессиональная деятельность',
+    harmful_factors: 'Вредные факторы',
+    harmful_factors_desc: 'Описание вредных факторов',
+  },
+  exam: {
+    height: 'Рост',
+    weight: 'Вес',
+    bmi: 'ИМТ',
+    bsa: 'BSA',
+    ecog: 'ECOG',
+    constitution: 'Телосложение',
+    mammary_right_desc: 'Правая молочная железа',
+    mammary_left_desc: 'Левая молочная железа',
+    mammary_lymph_nodes: 'Регионарные лимфоузлы',
+    skin_description: 'Кожа и слизистые',
+    lymph_description: 'Лимфоузлы',
+    respiratory_description: 'Органы дыхания',
+    chest_organs_description: 'Органы грудной клетки',
+    cardio_description: 'Сердечно-сосудистая система',
+    abdomen_description: 'Органы брюшной полости',
+    musculoskeletal_description: 'Костно-мышечная система',
+    endocrine_description: 'Эндокринная система',
+    neuro_description: 'Неврологический статус',
+  },
+  diagnostics: {
+    lab_hb: 'Гемоглобин',
+    lab_wbc: 'Лейкоциты',
+    lab_plt: 'Тромбоциты',
+    lab_esr: 'СОЭ',
+    lab_other: 'Прочие лабораторные показатели',
+    imaging_desc: 'Инструментальная диагностика',
+    histology_desc: 'Патоморфология',
+    ihc_desc: 'ИГХ и молекулярная генетика',
+  },
+  diagnosis: {
+    working_diagnosis: 'Рабочий диагноз',
+    icd10: 'МКБ-10',
+    tnm: 'TNM',
+    reasoning: 'Обоснование',
+    confidence: 'Уверенность модели',
+    missing_data: 'Недостающие данные',
+    is_final: 'Финальный диагноз',
+  },
+};
+
+const menopauseStatusLabel: Record<string, string> = {
+  premenopause: 'Пременопауза',
+  perimenopause: 'Перименопауза',
+  postmenopause: 'Постменопауза',
+  unknown: 'Требуется уточнение',
+  not_applicable: 'Неприменимо',
+};
+
+const yesNo = (value: boolean) => (value ? 'Да' : 'Нет');
+const isEmpty = (value: unknown) => value === null || value === undefined || value === '';
+const toText = (value: unknown): string => {
+  if (isEmpty(value)) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'boolean') return value ? 'Да' : '';
+  if (Array.isArray(value)) return value.map(toText).filter(Boolean).join('; ');
+  return '';
+};
+
+const safe = (value: unknown) => toText(value) || 'Не указано';
+const technicalKeys = new Set(['id', 'created_at', 'updated_at']);
+
+const formatDate = (value: unknown) => {
+  if (typeof value !== 'string' || !value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.trim();
+  return date.toLocaleDateString('ru-RU');
+};
+
+const humanizeKey = (key: string) =>
+  key
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (s) => s.toUpperCase());
+
+const formatPrimitive = (key: string, value: unknown) => {
+  if (key === 'gender') return value === 'male' ? 'Мужской' : value === 'female' ? 'Женский' : '';
+  if (key === 'birth_date' || key === 'last_menstruation_date') return formatDate(value);
+  if (key === 'menopause_status' || key === 'menopause_status_manual') return menopauseStatusLabel[String(value)] || safe(value);
+  if (key === 'bilateral_oophorectomy' || typeof value === 'boolean') return value ? yesNo(true) : '';
+  return safe(value);
+};
+
+const shouldSkipField = (key: string, value: unknown, source: any) => {
+  if (technicalKeys.has(key) || isEmpty(value)) return true;
+  if (typeof value === 'boolean' && value === false) return true;
+  if (key === 'menopause_mode') return true;
+  if (key === 'menopause_status_manual' && String(value) === 'unknown') return true;
+  if (key === 'menopause_status' && ['unknown', 'not_applicable'].includes(String(value))) return true;
+  if (key === 'menopause_basis' && toText(value).toLowerCase().includes('неприменимо')) return true;
+  if (source?.gender === 'male' && key.startsWith('menopause')) return true;
+  return false;
+};
+
+const appendGenericSection = (parts: string[], title: string, source: any, labels: Record<string, string> = {}) => {
+  if (!source || typeof source !== 'object') return;
+  const lines: string[] = [];
+  Object.entries(source).forEach(([key, value]) => {
+    if (shouldSkipField(key, value, source)) return;
+    const label = labels[key] || humanizeKey(key);
+    if (Array.isArray(value)) {
+      const values = value
+        .map((item) => (typeof item === 'object' ? '' : safe(item)))
+        .filter(Boolean);
+      if (values.length === 0) return;
+      lines.push(`${label}:`);
+      values.forEach((item) => lines.push(`- ${item}`));
+      return;
+    }
+    if (typeof value === 'object') return;
+    const formatted = formatPrimitive(key, value);
+    if (!formatted) return;
+    lines.push(`${label}: ${formatted}`);
+  });
+  if (lines.length === 0) return;
+  parts.push(title, ...lines, '');
+};
+
+const appendPatientSection = (parts: string[], patient: any) => {
+  if (!patient) return;
+  const lines: string[] = [];
+  const pushLine = (label: string, value: string) => {
+    if (!value) return;
+    lines.push(`${label}: ${value}`);
+  };
+
+  pushLine('ФИО', safe(patient.full_name));
+  pushLine('Дата рождения', formatDate(patient.birth_date));
+  pushLine('Пол', formatPrimitive('gender', patient.gender));
+  pushLine('СНИЛС', toText(patient.snils));
+  pushLine('Полис ОМС', toText(patient.policy_number));
+  pushLine('Контактные данные', toText(patient.contact_info));
+
+  if (patient.gender === 'female') {
+    pushLine('Дата последней менструации', formatDate(patient.last_menstruation_date));
+    pushLine('Двусторонняя овариоэктомия', formatPrimitive('bilateral_oophorectomy', patient.bilateral_oophorectomy));
+    pushLine('Менопаузальный статус', formatPrimitive('menopause_status', patient.menopause_status));
+    if (!toText(patient.menopause_basis).toLowerCase().includes('неприменимо')) {
+      pushLine('Основание менопаузального статуса', toText(patient.menopause_basis));
+    }
+  }
+
+  if (lines.length === 0) return;
+  parts.push('1. Паспортная часть', ...lines, '');
+};
+
+const appendExamSection = (parts: string[], exam: any) => {
+  if (!exam || typeof exam !== 'object') return;
+  const lines: string[] = [];
+  const pushLine = (label: string, value: unknown) => {
+    const text = toText(value);
+    if (!text) return;
+    lines.push(`${label}: ${text}`);
+  };
+
+  pushLine('Рост (см)', exam.height);
+  pushLine('Вес (кг)', exam.weight);
+  pushLine('ИМТ', exam.bmi);
+  pushLine('Площадь поверхности тела (BSA)', exam.bsa);
+  pushLine('ECOG', exam.ecog);
+  pushLine('Телосложение', exam.constitution);
+  pushLine('Правая молочная железа', exam.mammary_right_desc);
+  pushLine('Левая молочная железа', exam.mammary_left_desc);
+  pushLine('Регионарные лимфоузлы', exam.mammary_lymph_nodes);
+  pushLine('Кожные покровы и слизистые', exam.skin_description);
+  pushLine('Лимфатические узлы', exam.lymph_description);
+  pushLine('Органы дыхания', exam.respiratory_description);
+  pushLine('Органы грудной клетки', exam.chest_organs_description);
+  pushLine('Сердечно-сосудистая система', exam.cardio_description);
+  pushLine('Органы брюшной полости', exam.abdomen_description);
+  pushLine('Костно-мышечная система', exam.musculoskeletal_description);
+  pushLine('Органы эндокринной системы', exam.endocrine_description);
+  pushLine('Неврологический статус', exam.neuro_description);
+
+  const rightSigns = Object.entries(exam)
+    .filter(([key, value]) => key.startsWith('mammary_right_') && !key.endsWith('_desc') && typeof value === 'boolean' && value)
+    .map(([key]) => key.replace('mammary_right_', '').replace(/_/g, ' '));
+  const leftSigns = Object.entries(exam)
+    .filter(([key, value]) => key.startsWith('mammary_left_') && !key.endsWith('_desc') && typeof value === 'boolean' && value)
+    .map(([key]) => key.replace('mammary_left_', '').replace(/_/g, ' '));
+
+  if (rightSigns.length > 0) {
+    lines.push(`Правая молочная железа (признаки): ${rightSigns.join(', ')}`);
+  }
+  if (leftSigns.length > 0) {
+    lines.push(`Левая молочная железа (признаки): ${leftSigns.join(', ')}`);
+  }
+
+  if (lines.length === 0) return;
+  parts.push('3. Объективный осмотр', ...lines, '');
+};
+
+type NormalizedPrescription = { type: string; name: string; details: string };
+
+const normalizePrescriptionItem = (item: any): NormalizedPrescription | null => {
+  if (typeof item === 'string') {
+    const text = item.trim();
+    if (!text) return null;
+    return { type: 'Препарат', name: text, details: text };
+  }
+  if (!item || typeof item !== 'object') return null;
+
+  const type = toText(item.type || item.category || item.kind || item.classification) || 'Препарат';
+  const name = toText(item.name || item.drug || item.medication || item.medicine || item.title) || 'Без названия';
+  const detailsParts = [
+    toText(item.details || item.instructions),
+    toText(item.dose || item.dosage),
+    toText(item.route),
+    toText(item.frequency),
+    toText(item.day),
+    toText(item.duration),
+    toText(item.regimen),
+    toText(item.note || item.notes),
+  ].filter(Boolean);
+  const details = detailsParts.join('; ') || name;
+  return { type, name, details };
+};
+
+const normalizePrescriptions = (value: unknown): NormalizedPrescription[] => {
+  if (Array.isArray(value)) {
+    return value.map(normalizePrescriptionItem).filter((item): item is NormalizedPrescription => !!item);
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(/\r?\n|;/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => ({ type: 'Препарат', name: line, details: line }));
+  }
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([name, details]) => {
+        const detailsText = toText(details);
+        if (!name.trim() && !detailsText) return null;
+        return {
+          type: 'Препарат',
+          name: name.trim() || 'Без названия',
+          details: detailsText || name.trim(),
+        };
+      })
+      .filter((item): item is NormalizedPrescription => !!item);
+  }
+  return [];
+};
+
+const appendTreatmentSection = (parts: string[], treatment: any) => {
+  if (!treatment || typeof treatment !== 'object') return;
+  const lines: string[] = [];
+  const pushLine = (label: string, value: unknown) => {
+    const text = toText(value);
+    if (!text) return;
+    lines.push(`${label}: ${text}`);
+  };
+
+  pushLine('Стратегия лечения', treatment.treatment_strategy);
+  pushLine('Основное лечение', treatment.primary_treatment);
+  pushLine('Схема', treatment.regimen);
+  pushLine('Источник КР', treatment.cr_source);
+
+  const recommendationItems: unknown[] = Array.isArray(treatment.recommendations)
+    ? (treatment.recommendations as unknown[])
+    : toText(treatment.recommendations)
+      ? [treatment.recommendations as unknown]
+      : [];
+  const recommendations: string[] = recommendationItems.map(toText).filter((x) => Boolean(x));
+  if (recommendations.length > 0) {
+    lines.push('Рекомендации:');
+    recommendations.forEach((item) => lines.push(`- ${item}`));
+  }
+
+  const warningItems: unknown[] = Array.isArray(treatment.warnings)
+    ? (treatment.warnings as unknown[])
+    : toText(treatment.warnings)
+      ? [treatment.warnings as unknown]
+      : [];
+  const warnings: string[] = warningItems.map(toText).filter((x) => Boolean(x));
+  if (warnings.length > 0) {
+    lines.push('Клинические предостережения:');
+    warnings.forEach((item) => lines.push(`- ${item}`));
+  }
+
+  if (lines.length === 0) return;
+  parts.push('6. План лечения', ...lines, '');
+};
+
+const appendPrescriptionsSection = (parts: string[], treatment: any) => {
+  const prescriptions = normalizePrescriptions(treatment?.prescriptions);
+  if (prescriptions.length === 0) return;
+  parts.push('7. Лист назначений');
+  prescriptions.forEach((item, index) => {
+    parts.push(`${index + 1}. ${item.type}: ${item.name}`);
+    parts.push(`   Подробности: ${item.details}`);
+  });
+  parts.push('');
+};
+
 export function ReportDialog({ isOpen, onClose }: ReportDialogProps) {
   const { data } = useConsultation();
-  const contentRef = useRef<HTMLDivElement>(null);
 
   const generateReport = () => {
-    const parts = [];
+    const parts = [
+      'МЕДИЦИНСКИЙ ОТЧЕТ ПО КОНСУЛЬТАЦИИ',
+      `Дата формирования: ${new Date().toLocaleString('ru-RU')}`,
+      ''
+    ];
 
-    if (data.patient) {
-      parts.push(`ПАЦИЕНТ: ${data.patient.full_name || 'Не указано'}`);
-      parts.push(`ДАТА РОЖДЕНИЯ: ${data.patient.birth_date ? new Date(data.patient.birth_date).toLocaleDateString('ru-RU') : 'Не указано'}`);
-      parts.push(`ПОЛ: ${data.patient.gender === 'male' ? 'Мужской' : 'Женский'}`);
-      if (data.patient.snils) parts.push(`СНИЛС: ${data.patient.snils}`);
-      if (data.patient.policy_number) parts.push(`ПОЛИС: ${data.patient.policy_number}`);
+    appendPatientSection(parts, data.patient);
+    appendGenericSection(parts, '2. Жалобы и анамнез', data.anamnesis, sectionLabels.anamnesis);
+    appendExamSection(parts, data.exam);
+    appendGenericSection(parts, '4. Обследования', data.diagnostics, sectionLabels.diagnostics);
+    appendGenericSection(parts, '5. Диагноз', data.diagnosis, sectionLabels.diagnosis);
+    appendTreatmentSection(parts, data.treatment);
+    appendPrescriptionsSection(parts, data.treatment);
+
+    if (data.documents && Array.isArray(data.documents) && data.documents.length > 0) {
+      parts.push('8. Вложенные документы');
+      data.documents.forEach((doc: any, index: number) => {
+        const meta = `Документ ${index + 1}: ${safe(doc.name)} | Тип: ${safe(doc.type)} | Для ИИ: ${yesNo(!!doc.includeInAnalysis)}`;
+        parts.push(meta);
+        if (doc.type === 'text' && typeof doc.content === 'string' && doc.content.trim()) {
+          parts.push(`Фрагмент: ${doc.content.slice(0, 600)}`);
+        }
+      });
       parts.push('');
-    }
-
-    if (data.anamnesis) {
-      parts.push('--- ЖАЛОБЫ И АНАМНЕЗ ---');
-      if (data.anamnesis.complaints) parts.push(`ЖАЛОБЫ:\n${data.anamnesis.complaints}`);
-      if (data.anamnesis.history_of_disease) parts.push(`ИСТОРИЯ ЗАБОЛЕВАНИЯ:\n${data.anamnesis.history_of_disease}`);
-      if (data.anamnesis.life_history) parts.push(`ИСТОРИЯ ЖИЗНИ:\n${data.anamnesis.life_history}`);
-      parts.push('');
-    }
-
-    if (data.exam) {
-      parts.push('--- ОБЪЕКТИВНЫЙ ОСМОТР ---');
-      if (data.exam.general_condition) parts.push(`ОБЩЕЕ СОСТОЯНИЕ: ${data.exam.general_condition}`);
-      if (data.exam.ecog) parts.push(`ECOG: ${data.exam.ecog}`);
-      if (data.exam.local_status) parts.push(`LOCAL STATUS:\n${data.exam.local_status}`);
-      parts.push('');
-    }
-
-    if (data.diagnostics) {
-      parts.push('--- ДАННЫЕ ОБСЛЕДОВАНИЙ ---');
-      parts.push(data.diagnostics); // Assuming it's a string or simple object
-      parts.push('');
-    }
-
-    if (data.diagnosis) {
-      parts.push('--- ДИАГНОЗ ---');
-      parts.push(data.diagnosis);
-      parts.push('');
-    }
-
-    if (data.treatment) {
-      parts.push('--- ПЛАН ЛЕЧЕНИЯ ---');
-      if (data.treatment.treatment_strategy) parts.push(`СТРАТЕГИЯ: ${data.treatment.treatment_strategy}`);
-      if (data.treatment.primary_treatment) parts.push(`ОСНОВНОЕ ЛЕЧЕНИЕ: ${data.treatment.primary_treatment}`);
-      if (data.treatment.regimen) parts.push(`СХЕМА: ${data.treatment.regimen}`);
-      if (data.treatment.recommendations && Array.isArray(data.treatment.recommendations)) {
-        parts.push('РЕКОМЕНДАЦИИ:');
-        data.treatment.recommendations.forEach((rec: string) => parts.push(`- ${rec}`));
-      }
     }
 
     return parts.join('\n');
