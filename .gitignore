@@ -1,0 +1,7 @@
+patient_data.db
+oncoassistant-html/
+tsconfig.tsbuildinfo
+node_modules/
+dist/
+*.log
+.env

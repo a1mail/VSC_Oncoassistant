@@ -1,0 +1,5 @@
+{
+  "name": "OncoAssistant",
+  "description": "A clinical decision support system for oncologists, featuring patient management, anamnesis, AI-assisted diagnosis based on Russian Clinical Recommendations, and treatment planning.",
+  "requestFramePermissions": []
+}

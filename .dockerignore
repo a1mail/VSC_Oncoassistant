@@ -1,0 +1,7 @@
+node_modules
+dist
+.git
+.github
+*.log
+patient_data.db-journal
+tsconfig.tsbuildinfo

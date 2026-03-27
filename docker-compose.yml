@@ -1,0 +1,12 @@
+services:
+  oncoassistant:
+    build: .
+    container_name: oncoassistant
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      API_KEY: ${API_KEY:-}
+    volumes:
+      - ./patient_data.db:/app/patient_data.db
