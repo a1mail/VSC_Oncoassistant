@@ -21,7 +21,7 @@ const tabs = [
 ];
 
 export function Layout() {
-  const { data, updateData, saveToServer, resetData, consultationId } = useConsultation();
+  const { data, updateData, saveToServer, resetData, consultationId, saveStatus, lastSaved } = useConsultation();
   const toast = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -132,15 +132,29 @@ export function Layout() {
             БД
           </button>
 
+          <div className="flex flex-col items-end justify-center min-w-[70px]">
+            {saveStatus === 'saving' && <span className="text-[10px] text-blue-600 font-medium leading-tight animate-pulse">Сохранение...</span>}
+            {saveStatus === 'saved' && lastSaved && <span className="text-[10px] text-green-600 font-medium leading-tight whitespace-nowrap">Сохранено {lastSaved.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>}
+            {saveStatus === 'error' && <span className="text-[10px] text-red-600 font-medium leading-tight">Ошибка</span>}
+          </div>
+
           <button 
             onClick={async () => {
               const result = await saveToServer();
               toast.toast(result.message, result.type);
             }}
-            className="flex items-center gap-2 px-3 py-2 bg-green-50 hover:bg-green-100 text-green-700 border border-green-200 rounded-lg text-sm font-medium transition-colors"
+            disabled={saveStatus === 'saving'}
+            className={cn(
+              "flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors border",
+              saveStatus === 'saving' 
+                ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed" 
+                : saveStatus === 'error'
+                  ? "bg-red-50 hover:bg-red-100 text-red-700 border-red-200"
+                  : "bg-green-50 hover:bg-green-100 text-green-700 border-green-200"
+            )}
             title="Сохранить текущего пациента в базу данных"
           >
-            <Save className="w-4 h-4" />
+            {saveStatus === 'saving' ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
             Сохранить
           </button>
 

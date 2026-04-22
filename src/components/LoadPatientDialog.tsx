@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { api, Patient } from '@/lib/api';
 import { useConsultation } from '@/context/ConsultationContext';
-import { Loader2, Search, User, X } from 'lucide-react';
+import { Loader2, Search, User, X, Trash2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 
 interface LoadPatientDialogProps {
@@ -11,7 +11,7 @@ interface LoadPatientDialogProps {
 }
 
 export function LoadPatientDialog({ isOpen, onClose }: LoadPatientDialogProps) {
-  const { updateData, triggerReload } = useConsultation();
+  const { updateData, triggerReload, consultationId } = useConsultation();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -30,6 +30,23 @@ export function LoadPatientDialog({ isOpen, onClose }: LoadPatientDialogProps) {
     } catch (error) {
       console.error(error);
       console.error('Не удалось загрузить список пациентов');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeletePatient = async (e: React.MouseEvent, id: number) => {
+    e.stopPropagation(); // Prevent row click
+    if (!confirm('Вы уверены, что хотите удалить этого пациента и все его консультации? Это действие нельзя отменить.')) {
+      return;
+    }
+    setIsLoading(true);
+    try {
+      await api.deletePatient(id);
+      setPatients(patients.filter(p => p.id !== id));
+    } catch (error) {
+      console.error(error);
+      alert('Ошибка при удалении пациента');
     } finally {
       setIsLoading(false);
     }
@@ -69,11 +86,15 @@ export function LoadPatientDialog({ isOpen, onClose }: LoadPatientDialogProps) {
     }
   };
 
-  const filteredPatients = patients.filter(p => 
-    p.full_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.snils?.includes(searchQuery) ||
-    p.policy_number?.includes(searchQuery)
-  );
+  const filteredPatients = patients.filter(p => {
+    const q = searchQuery.toLowerCase();
+    return (
+      p.full_name.toLowerCase().includes(q) ||
+      (p.snils && p.snils.includes(q)) ||
+      (p.policy_number && p.policy_number.includes(q)) ||
+      (p.latest_diagnosis && p.latest_diagnosis.toLowerCase().includes(q))
+    );
+  });
 
   if (!isOpen) return null;
 
@@ -121,9 +142,9 @@ export function LoadPatientDialog({ isOpen, onClose }: LoadPatientDialogProps) {
                   className="p-4 hover:bg-slate-50 cursor-pointer transition-colors flex justify-between items-center group"
                   onClick={() => handleSelectPatient(patient)}
                 >
-                  <div>
+                  <div className="flex-1 mr-4">
                     <h3 className="font-medium text-slate-900 group-hover:text-blue-700 transition-colors">{patient.full_name}</h3>
-                    <div className="text-sm text-slate-500 flex gap-4 mt-1">
+                    <div className="text-sm text-slate-500 flex flex-wrap gap-x-4 gap-y-1 mt-1">
                       <span>{new Date(patient.birth_date).toLocaleDateString('ru-RU')}</span>
                       <span>{patient.gender === 'male' ? 'Муж' : 'Жен'}</span>
                       {patient.snils && <span>СНИЛС: {patient.snils}</span>}
@@ -133,8 +154,26 @@ export function LoadPatientDialog({ isOpen, onClose }: LoadPatientDialogProps) {
                         </span>
                       )}
                     </div>
+                    {patient.latest_diagnosis && (
+                      <div className="text-sm text-slate-600 mt-2 bg-blue-50 p-2 rounded line-clamp-2">
+                        <span className="font-medium text-blue-800">Диагноз:</span> {patient.latest_diagnosis}
+                      </div>
+                    )}
                   </div>
-                  <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 transition-opacity">Загрузить</Button>
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-red-500 hover:text-red-700 hover:bg-red-50"
+                      onClick={(e) => handleDeletePatient(e, patient.id!)}
+                      title="Удалить пациента"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                    <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 transition-opacity">
+                      Загрузить
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>

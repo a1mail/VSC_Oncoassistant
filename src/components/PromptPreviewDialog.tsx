@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Send, AlertTriangle, Eye, EyeOff } from 'lucide-react';
+import { X, Send, AlertTriangle, Eye, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 
@@ -13,10 +13,32 @@ interface PromptPreviewDialogProps {
 
 export function PromptPreviewDialog({ isOpen, onClose, promptText, onConfirm, isLoading }: PromptPreviewDialogProps) {
   const [editedPrompt, setEditedPrompt] = useState(promptText);
+  const [progress, setProgress] = useState(0);
 
   useEffect(() => {
     setEditedPrompt(promptText);
   }, [promptText, isOpen]);
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isLoading) {
+      setProgress(0);
+      interval = setInterval(() => {
+        setProgress(prev => {
+          // Slow down progress as it gets closer to 90%
+          if (prev >= 90) return prev;
+          const increment = Math.max(0.5, (90 - prev) * 0.05);
+          return Math.min(90, prev + increment);
+        });
+      }, 500);
+    } else {
+      if (progress > 0) {
+        setProgress(100);
+        setTimeout(() => setProgress(0), 500);
+      }
+    }
+    return () => clearInterval(interval);
+  }, [isLoading]);
 
   if (!isOpen) return null;
 
@@ -57,18 +79,43 @@ export function PromptPreviewDialog({ isOpen, onClose, promptText, onConfirm, is
           />
         </div>
 
-        <div className="p-4 border-t border-slate-200 flex justify-end gap-3 bg-slate-50 rounded-b-xl">
-          <Button variant="outline" onClick={onClose} disabled={isLoading}>
-            Отмена
-          </Button>
-          <Button 
-            onClick={() => onConfirm(editedPrompt)} 
-            disabled={isLoading}
-            className="bg-blue-600 hover:bg-blue-700 gap-2"
-          >
-            {isLoading ? "Отправка..." : "Отправить запрос"}
-            <Send className="w-4 h-4" />
-          </Button>
+        <div className="p-4 border-t border-slate-200 bg-slate-50 rounded-b-xl">
+          {isLoading && (
+            <div className="mb-4">
+              <div className="flex justify-between text-xs text-slate-500 mb-1">
+                <span>Генерация ответа ИИ...</span>
+                <span>{Math.round(progress)}%</span>
+              </div>
+              <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                <div 
+                  className="bg-blue-600 h-2 rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${progress}%` }}
+                ></div>
+              </div>
+            </div>
+          )}
+          <div className="flex justify-end gap-3">
+            <Button variant="outline" onClick={onClose} disabled={isLoading}>
+              Отмена
+            </Button>
+            <Button 
+              onClick={() => onConfirm(editedPrompt)} 
+              disabled={isLoading}
+              className="bg-blue-600 hover:bg-blue-700 gap-2 min-w-[180px]"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Обработка...
+                </>
+              ) : (
+                <>
+                  Отправить запрос
+                  <Send className="w-4 h-4" />
+                </>
+              )}
+            </Button>
+          </div>
         </div>
       </div>
     </div>

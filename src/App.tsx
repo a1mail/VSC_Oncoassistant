@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from '@/components/Layout';
 import { PatientPage } from '@/pages/PatientPage';
 import { AnamnesisPage } from '@/pages/AnamnesisPage';
@@ -16,7 +16,7 @@ export default function App() {
   return (
     <ToastProvider>
     <ConsultationProvider>
-      <BrowserRouter>
+      <HashRouter>
         <Routes>
           <Route path="/" element={<Layout />}>
             <Route index element={<Navigate to="patient" replace />} />
@@ -30,7 +30,7 @@ export default function App() {
             <Route path="prescriptions" element={<PrescriptionsPage />} />
           </Route>
         </Routes>
-      </BrowserRouter>
+      </HashRouter>
     </ConsultationProvider>
     </ToastProvider>
   );

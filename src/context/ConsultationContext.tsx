@@ -32,6 +32,8 @@ type ConsultationContextType = {
   resetData: () => void;
   saveToServer: (silent?: boolean) => Promise<SaveResult>;
   triggerReload: () => void;
+  saveStatus: 'idle' | 'saving' | 'saved' | 'error';
+  lastSaved: Date | null;
 };
 
 const ConsultationContext = createContext<ConsultationContextType | undefined>(undefined);
@@ -52,16 +54,21 @@ const loadDraft = (): ConsultationData => {
 export function ConsultationProvider({ children }: { children: React.ReactNode }) {
   const [data, setData] = useState<ConsultationData>(loadDraft);
   const [consultationId, setConsultationId] = useState<string>(Date.now().toString());
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
 
   const updateData = useCallback((section: keyof ConsultationData, value: any) => {
     setData((prev) => {
       if (prev[section] === value) return prev;
+      setSaveStatus('idle'); // Reset status when data changes
       return { ...prev, [section]: value };
     });
   }, []);
 
   const triggerReload = useCallback(() => {
     setConsultationId(Date.now().toString());
+    setSaveStatus('idle');
+    setLastSaved(null);
   }, []);
 
   const resetData = useCallback(() => {
@@ -80,6 +87,9 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
         type: 'warning' 
       };
     }
+    
+    setSaveStatus('saving');
+    
     if (!data.patient?.id) {
       // If patient not saved yet, try to save patient first
       if (data.patient) {
@@ -92,6 +102,8 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
           await api.saveConsultation(savedPatient.id!, dataToSave);
           
           if (!silent) console.log("Данные успешно сохранены в базу данных");
+          setSaveStatus('saved');
+          setLastSaved(new Date());
           return { 
             success: true, 
             message: 'Данные успешно сохранены', 
@@ -99,6 +111,7 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
           };
         } catch (e:any) {
           console.error(e);
+          setSaveStatus('error');
           return { 
             success: false, 
             message: `Ошибка при сохранении: ${e?.message || 'неизвестная ошибка'}`, 
@@ -106,6 +119,7 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
           };
         }
       } else {
+        setSaveStatus('error');
         return { 
           success: false, 
           message: 'Сначала заполните данные пациента', 
@@ -117,6 +131,8 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
     try {
       await api.saveConsultation(data.patient.id, data);
       if (!silent) console.log("Данные успешно сохранены в базу данных");
+      setSaveStatus('saved');
+      setLastSaved(new Date());
       return { 
         success: true, 
         message: 'Данные успешно сохранены', 
@@ -124,6 +140,7 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
       };
     } catch (error:any) {
       console.error(error);
+      setSaveStatus('error');
       return { 
         success: false, 
         message: `Ошибка при сохранении: ${error?.message || 'неизвестная ошибка'}`, 
@@ -150,7 +167,7 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
   }, [data]);
 
   return (
-    <ConsultationContext.Provider value={{ data, consultationId, updateData, resetData, saveToServer, triggerReload }}>
+    <ConsultationContext.Provider value={{ data, consultationId, updateData, resetData, saveToServer, triggerReload, saveStatus, lastSaved }}>
       {children}
     </ConsultationContext.Provider>
   );

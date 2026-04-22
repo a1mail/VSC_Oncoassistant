@@ -441,6 +441,20 @@ export const aiService = {
   },
 
   prepareDiagnosisPrompt: (patientData: any, documents: any[] = []) => {
+    let customSystemPrompt = '';
+    try {
+      const storedPrompts = localStorage.getItem('onco_prompts');
+      if (storedPrompts) {
+        const prompts = JSON.parse(storedPrompts);
+        if (prompts.length > 0 && prompts[0].content) {
+          customSystemPrompt = prompts[0].content;
+        }
+      }
+    } catch {}
+
+    const systemPrompt = customSystemPrompt || `You are an expert oncologist assistant operating under the jurisdiction of the Russian Federation.
+You strictly adhere to the Clinical Recommendations (CR RF) approved by the Ministry of Health.`;
+
     const safePatientData = { ...patientData };
     if (safePatientData.patient) {
       safePatientData.patient = {
@@ -455,8 +469,7 @@ export const aiService = {
     const optimizedData = removeEmptyFields(safePatientData);
 
     let prompt = `
-You are an expert oncologist assistant operating under the jurisdiction of the Russian Federation.
-You strictly adhere to the Clinical Recommendations (CR RF) approved by the Ministry of Health.
+${systemPrompt}
 
 Analyze the following patient data and formulate a Working Diagnosis.
 
@@ -501,6 +514,19 @@ Do not use Markdown formatting in the response, just raw JSON.
   },
 
   prepareTreatmentPrompt: (diagnosisData: any, patientData: any, documents: any[] = []) => {
+    let customSystemPrompt = '';
+    try {
+      const storedPrompts = localStorage.getItem('onco_prompts');
+      if (storedPrompts) {
+        const prompts = JSON.parse(storedPrompts);
+        if (prompts.length > 0 && prompts[0].content) {
+          customSystemPrompt = prompts[0].content;
+        }
+      }
+    } catch {}
+
+    const systemPrompt = customSystemPrompt || `You are an expert oncologist assistant operating under the jurisdiction of the Russian Federation.`;
+
     const safePatientData = { ...patientData };
     if (safePatientData.patient) {
       safePatientData.patient = {
@@ -516,7 +542,7 @@ Do not use Markdown formatting in the response, just raw JSON.
     const optimizedDiagnosis = removeEmptyFields(diagnosisData);
 
     let prompt = `
-You are an expert oncologist assistant operating under the jurisdiction of the Russian Federation.
+${systemPrompt}
 Based on the confirmed diagnosis and patient data, outline the treatment plan according to CR RF.
 
 Diagnosis: ${JSON.stringify(optimizedDiagnosis)}

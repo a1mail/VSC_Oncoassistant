@@ -4,10 +4,11 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Settings, X, Edit2, Trash2, Plus, AlertCircle } from 'lucide-react';
+import { Settings, X, Edit2, Trash2, Plus, AlertCircle, FileText, Save } from 'lucide-react';
 import { profileService, SavedProviderProfile, ProviderListItem } from '@/lib/providers/profileService';
 import { ProviderForm } from './ProviderForm';
 import { aiService } from '@/lib/aiServiceCompat';
+import { Button } from '@/components/ui/button';
 
 const PROVIDER_LABELS: Record<string, string> = {
   gemini: 'Google Gemini',
@@ -22,7 +23,15 @@ const PROVIDER_LABELS: Record<string, string> = {
   local: 'Local (Ollama/LM Studio)',
 };
 
+type Prompt = {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+};
+
 export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
+  const [activeTab, setActiveTab] = useState<'providers' | 'prompts'>('providers');
   const [profiles, setProfiles] = useState<ProviderListItem[]>([]);
   const [view, setView] = useState<'list' | 'form'>('list');
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
@@ -32,13 +41,59 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
   const [enableFallback, setEnableFallback] = useState(true);
   const [showFallbackWarning, setShowFallbackWarning] = useState(false);
 
+  const [prompts, setPrompts] = useState<Prompt[]>([]);
+  const [editingPromptId, setEditingPromptId] = useState<string | null>(null);
+  const [promptContent, setPromptContent] = useState('');
+  const [isLoadingPrompts, setIsLoadingPrompts] = useState(false);
+
   useEffect(() => {
     if (isOpen) {
       loadProfiles();
       loadFallbackSetting();
+      if (activeTab === 'prompts') {
+        loadPrompts();
+      }
       setView('list');
     }
-  }, [isOpen]);
+  }, [isOpen, activeTab]);
+
+  const loadPrompts = async () => {
+    setIsLoadingPrompts(true);
+    try {
+      const stored = localStorage.getItem('onco_prompts');
+      if (stored) {
+        setPrompts(JSON.parse(stored));
+      } else {
+        // Default prompt if empty
+        const defaultPrompts = [
+          {
+            id: '1',
+            name: 'Системный промпт',
+            description: 'Базовые инструкции для ИИ-помощника',
+            content: 'Ты - опытный онколог и специалист по диагностике. Используй доступную информацию для предложения наиболее вероятных диагнозов и практических рекомендаций.'
+          }
+        ];
+        setPrompts(defaultPrompts);
+        localStorage.setItem('onco_prompts', JSON.stringify(defaultPrompts));
+      }
+    } catch (err) {
+      console.error('Failed to load prompts', err);
+    } finally {
+      setIsLoadingPrompts(false);
+    }
+  };
+
+  const handleSavePrompt = async (id: string) => {
+    try {
+      const newPrompts = prompts.map(p => p.id === id ? { ...p, content: promptContent } : p);
+      setPrompts(newPrompts);
+      localStorage.setItem('onco_prompts', JSON.stringify(newPrompts));
+      setEditingPromptId(null);
+    } catch (err) {
+      console.error(err);
+      alert('Ошибка при сохранении промпта');
+    }
+  };
 
   const loadProfiles = () => {
     setProfiles(profileService.getAllProfiles());
@@ -156,12 +211,28 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto relative">
-        <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
-          <h2 className="text-xl font-bold flex items-center gap-2">
-            <Settings className="w-5 h-5" />
-            AI Provider Settings
-          </h2>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto relative flex flex-col">
+        <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between z-10">
+          <div className="flex items-center gap-6">
+            <h2 className="text-xl font-bold flex items-center gap-2 text-slate-900">
+              <Settings className="w-5 h-5" />
+              Настройки ИИ
+            </h2>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => setActiveTab('providers')}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'providers' ? 'bg-blue-100 text-blue-700' : 'text-slate-600 hover:bg-slate-100'}`}
+              >
+                Провайдеры
+              </button>
+              <button 
+                onClick={() => setActiveTab('prompts')}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'prompts' ? 'bg-blue-100 text-blue-700' : 'text-slate-600 hover:bg-slate-100'}`}
+              >
+                Промпты
+              </button>
+            </div>
+          </div>
           <button
             onClick={onClose}
             className="text-slate-400 hover:text-slate-600 transition"
@@ -172,11 +243,13 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
           </button>
         </div>
 
-        <div className="p-6">
-          {view === 'list' && (
+        <div className="p-6 flex-1 overflow-y-auto">
+          {activeTab === 'providers' && (
             <>
-              {/* Empty State */}
-              {profiles.length === 0 ? (
+              {view === 'list' && (
+                <>
+                  {/* Empty State */}
+                  {profiles.length === 0 ? (
                 <div className="text-center py-12">
                   <Settings className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                   <p className="text-slate-600 mb-4">No provider profiles created yet</p>
@@ -398,8 +471,10 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
               )}
             </>
           )}
+        </>
+      )}
 
-          {view === 'form' && (
+      {activeTab === 'providers' && view === 'form' && (
             <>
               <h3 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
                 <Edit2 className="w-5 h-5 text-slate-400" />
@@ -412,10 +487,74 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
               />
             </>
           )}
+
+          {activeTab === 'prompts' && (
+            <div className="space-y-6">
+              <div className="bg-blue-50 border border-blue-200 p-4 rounded-lg">
+                <h3 className="font-medium text-blue-900 flex items-center gap-2">
+                  <FileText className="w-4 h-4" />
+                  Системные инструкции (Промпты)
+                </h3>
+                <p className="text-sm text-blue-800 mt-1">
+                  Здесь вы можете изменить инструкции, которые отправляются нейросети перед генерацией ответа. Это позволяет настроить стиль и фокус внимания ИИ.
+                </p>
+              </div>
+
+              {isLoadingPrompts ? (
+                <div className="text-center py-8 text-slate-500">Загрузка промптов...</div>
+              ) : (
+                <div className="space-y-4">
+                  {prompts.map(prompt => (
+                    <div key={prompt.id} className="border border-slate-200 rounded-lg p-4 bg-white shadow-sm">
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <h4 className="font-bold text-slate-900">{prompt.name}</h4>
+                          <p className="text-xs text-slate-500">{prompt.description}</p>
+                        </div>
+                        {editingPromptId !== prompt.id && (
+                          <Button 
+                            variant="ghost" 
+                            size="sm" 
+                            onClick={() => {
+                              setEditingPromptId(prompt.id);
+                              setPromptContent(prompt.content);
+                            }}
+                            className="text-blue-600 hover:bg-blue-50"
+                          >
+                            <Edit2 className="w-4 h-4 mr-1" /> Изменить
+                          </Button>
+                        )}
+                      </div>
+                      
+                      {editingPromptId === prompt.id ? (
+                        <div className="mt-3 space-y-3">
+                          <textarea
+                            value={promptContent}
+                            onChange={(e) => setPromptContent(e.target.value)}
+                            className="w-full min-h-[150px] p-3 text-sm border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono"
+                          />
+                          <div className="flex gap-2 justify-end">
+                            <Button variant="outline" onClick={() => setEditingPromptId(null)}>Отмена</Button>
+                            <Button onClick={() => handleSavePrompt(prompt.id)} className="gap-2">
+                              <Save className="w-4 h-4" /> Сохранить
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-2 bg-slate-50 p-3 rounded-md border border-slate-100">
+                          <p className="text-sm text-slate-700 whitespace-pre-wrap font-mono">{prompt.content}</p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Footer */}
-        {view === 'list' && (
+        {(view === 'list' || activeTab === 'prompts') && (
           <div className="border-t border-slate-200 px-6 py-4 flex justify-end">
             <button
               onClick={onClose}

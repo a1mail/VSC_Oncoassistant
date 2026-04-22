@@ -420,9 +420,9 @@ export function ReportDialog({ isOpen, onClose }: ReportDialogProps) {
             <Copy className="w-4 h-4" />
             Копировать весь текст
           </Button>
-          <Button onClick={handlePrint} className="gap-2">
+          <Button onClick={handlePrint} className="gap-2" title="Печать или сохранение в PDF через системный диалог">
             <Printer className="w-4 h-4" />
-            Печать текста
+            Печать / PDF
           </Button>
         </div>
       </div>

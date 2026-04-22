@@ -64,8 +64,9 @@ const authLimiter = rateLimit({
   skipSuccessfulRequests: true,
 });
 
-// Initialize Database
-const dbPath = path.resolve("patient_data.db");
+const resolvedDbPath = process.env.ONCOASSISTANT_DB_PATH || process.env.DATABASE_PATH || "patient_data.db";
+const dbPath = path.isAbsolute(resolvedDbPath) ? resolvedDbPath : path.resolve(resolvedDbPath);
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 const db = new Database(dbPath);
 const patientColumns = db.prepare("PRAGMA table_info(patients)").all() as Array<{ name: string }>;
 const hasPatientColumn = (name: string) => patientColumns.some((column) => column.name === name);
@@ -119,6 +120,16 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS ai_prompts (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    content TEXT NOT NULL,
+    is_system INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // Добавить колонки если их нет
@@ -139,6 +150,39 @@ if (!hasPatientColumn('menopause_status')) {
 }
 if (!hasPatientColumn('menopause_basis')) {
   db.exec(`ALTER TABLE patients ADD COLUMN menopause_basis TEXT;`);
+}
+if (!hasPatientColumn('latest_diagnosis')) {
+  db.exec(`ALTER TABLE patients ADD COLUMN latest_diagnosis TEXT;`);
+}
+
+// Заполнить базовые промпты, если таблица пуста
+const promptsCount = db.prepare("SELECT COUNT(*) as count FROM ai_prompts").get() as { count: number };
+if (promptsCount.count === 0) {
+  const insertPrompt = db.prepare(`
+    INSERT INTO ai_prompts (id, name, description, content, is_system)
+    VALUES (?, ?, ?, ?, 1)
+  `);
+  
+  insertPrompt.run(
+    'system_anamnesis',
+    'Сбор анамнеза',
+    'Системный промпт для структурирования анамнеза',
+    'Действуй как опытный онколог. Структурируй предоставленные медицинские данные пациента в четкий, профессиональный медицинский анамнез. Выдели ключевые жалобы, историю заболевания, сопутствующие патологии. Используй медицинскую терминологию.'
+  );
+  
+  insertPrompt.run(
+    'system_diagnosis',
+    'Генерация диагноза',
+    'Системный промпт для формирования предварительного диагноза',
+    'Действуй как опытный онколог-диагност. На основе предоставленного анамнеза и данных обследований, сформулируй обоснованный предварительный или клинический диагноз. Укажи стадию (TNM, если применимо) и обоснуй свое решение.'
+  );
+  
+  insertPrompt.run(
+    'system_treatment',
+    'План лечения',
+    'Системный промпт для составления плана лечения',
+    'Действуй как опытный онколог-химиотерапевт/хирург. На основе предоставленного диагноза и анамнеза пациента, разработай подробный план лечения согласно современным клиническим рекомендациям (ESMO, NCCN, RUSSCO). Опиши возможные схемы химиотерапии, необходимость хирургического вмешательства или лучевой терапии.'
+  );
 }
 
 // Authentication middleware
@@ -441,6 +485,29 @@ async function startServer() {
     } catch (error) {
       console.error("Database error:", error);
       res.status(500).json({ error: "Failed to save patient" });
+    }
+  });
+
+  // Delete patient
+  app.delete("/api/patients/:id", (req: AuthRequest, res: ExpressResponse) => {
+    try {
+      const id = req.params.id;
+      if (!id) return res.status(400).json({ error: "id is required" });
+      
+      // Delete associated consultations first
+      db.prepare("DELETE FROM consultations WHERE patient_id = ?").run(id);
+      
+      // Delete patient
+      const stmt = db.prepare("DELETE FROM patients WHERE id = ?");
+      const info = stmt.run(id);
+      
+      if (info.changes === 0) {
+        return res.status(404).json({ error: "Patient not found" });
+      }
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Delete patient error:", error);
+      res.status(500).json({ error: "Failed to delete patient" });
     }
   });
 
@@ -761,6 +828,38 @@ async function startServer() {
   app.post("/api/ai/generate", handleAiProxy);
 
   // ============================================
+  // API ROUTES - PROMPTS
+  // ============================================
+
+  app.get("/api/prompts", (req: AuthRequest, res: ExpressResponse) => {
+    try {
+      const stmt = db.prepare("SELECT * FROM ai_prompts ORDER BY is_system DESC, name ASC");
+      const prompts = stmt.all();
+      res.json(prompts);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch prompts" });
+    }
+  });
+
+  app.put("/api/prompts/:id", (req: AuthRequest, res: ExpressResponse) => {
+    try {
+      const id = req.params.id;
+      const { content } = req.body;
+      if (!content) return res.status(400).json({ error: "Content is required" });
+      
+      const stmt = db.prepare("UPDATE ai_prompts SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+      const info = stmt.run(content, id);
+      
+      if (info.changes === 0) {
+        return res.status(404).json({ error: "Prompt not found" });
+      }
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update prompt" });
+    }
+  });
+
+  // ============================================
   // API ROUTES - CONSULTATIONS
   // ============================================
 
@@ -789,6 +888,12 @@ async function startServer() {
       );
       const info = stmt.run(req.params.patientId, JSON.stringify(data));
 
+      // Extract and save latest diagnosis to patient record for easy searching
+      const latestDiagnosis = data?.diagnosis?.working_diagnosis || data?.diagnosis?.diagnosis_text || data?.diagnosis?.clinical_diagnosis || null;
+      if (latestDiagnosis) {
+        db.prepare("UPDATE patients SET latest_diagnosis = ? WHERE id = ?").run(latestDiagnosis, req.params.patientId);
+      }
+
       res.json({
         id: info.lastInsertRowid,
         patientId: req.params.patientId,
@@ -814,7 +919,14 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     if (hasDist) {
+      // Перенаправление с корня на /app-registry/ ДО express.static
+      app.get('/', (req, res) => {
+        res.redirect(302, '/app-registry/');
+      });
+
       app.use(express.static(distPath));
+      app.use('/app-registry', express.static(distPath)); // Поддержка base='/app-registry/' из Vite
+      
       app.get('*', (req, res, next) => {
         if (req.path.startsWith('/api/')) return next();
         res.sendFile(distIndexPath);

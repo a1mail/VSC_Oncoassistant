@@ -13,51 +13,96 @@ export type Patient = {
   menopause_status?: string;
   menopause_basis?: string;
   updated_at?: string;
+  latest_diagnosis?: string;
 };
 
 export const api = {
-  parseError: async (res: Response, fallback: string) => {
-    try {
-      const data = await res.json();
-      return String(data?.error || fallback);
-    } catch {
-      try {
-        const text = await res.text();
-        return text || fallback;
-      } catch {
-        return fallback;
-      }
-    }
-  },
   getPatients: async (): Promise<Patient[]> => {
-    const res = await fetch('/api/patients');
-    if (!res.ok) throw new Error(await api.parseError(res, 'Failed to fetch patients'));
-    return res.json();
+    try {
+      const data = localStorage.getItem('onco_patients');
+      return data ? JSON.parse(data) : [];
+    } catch {
+      return [];
+    }
   },
 
   savePatient: async (patient: Patient): Promise<Patient> => {
-    const res = await fetch('/api/patients', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patient),
-    });
-    if (!res.ok) throw new Error(await api.parseError(res, 'Failed to save patient'));
-    return res.json();
+    const patients = await api.getPatients();
+    let updatedPatient = { ...patient };
+    
+    if (patient.id) {
+      const index = patients.findIndex(p => p.id === patient.id);
+      if (index >= 0) {
+        updatedPatient.updated_at = new Date().toISOString();
+        patients[index] = updatedPatient;
+      } else {
+        updatedPatient.id = Date.now();
+        updatedPatient.updated_at = new Date().toISOString();
+        patients.push(updatedPatient);
+      }
+    } else {
+      updatedPatient.id = Date.now();
+      updatedPatient.updated_at = new Date().toISOString();
+      patients.push(updatedPatient);
+    }
+    
+    localStorage.setItem('onco_patients', JSON.stringify(patients));
+    return updatedPatient;
+  },
+
+  deletePatient: async (id: number): Promise<void> => {
+    const patients = await api.getPatients();
+    const newPatients = patients.filter(p => p.id !== id);
+    localStorage.setItem('onco_patients', JSON.stringify(newPatients));
+    
+    // Also delete associated consultations
+    const allConsultationsStr = localStorage.getItem('onco_consultations');
+    if (allConsultationsStr) {
+      try {
+        const allConsultations = JSON.parse(allConsultationsStr);
+        delete allConsultations[id];
+        localStorage.setItem('onco_consultations', JSON.stringify(allConsultations));
+      } catch {}
+    }
   },
 
   getConsultation: async (patientId: number) => {
-    const res = await fetch(`/api/consultations/${patientId}`);
-    if (!res.ok) throw new Error(await api.parseError(res, 'Failed to fetch consultation'));
-    return res.json();
+    try {
+      const data = localStorage.getItem('onco_consultations');
+      const allConsultations = data ? JSON.parse(data) : {};
+      return allConsultations[patientId] || null;
+    } catch {
+      return null;
+    }
   },
 
   saveConsultation: async (patientId: number, data: any) => {
-    const res = await fetch(`/api/consultations/${patientId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data }),
-    });
-    if (!res.ok) throw new Error(await api.parseError(res, 'Failed to save consultation'));
-    return res.json();
+    let allConsultations: Record<string, any> = {};
+    try {
+      const stored = localStorage.getItem('onco_consultations');
+      if (stored) allConsultations = JSON.parse(stored);
+    } catch {}
+    
+    const consultation = {
+      patient_id: patientId,
+      data: JSON.stringify(data),
+      date: new Date().toISOString()
+    };
+    
+    allConsultations[patientId] = consultation;
+    localStorage.setItem('onco_consultations', JSON.stringify(allConsultations));
+    
+    // Update latest diagnosis on patient
+    const latestDiagnosis = data?.diagnosis?.working_diagnosis || data?.diagnosis?.diagnosis_text || data?.diagnosis?.clinical_diagnosis || null;
+    if (latestDiagnosis) {
+      const patients = await api.getPatients();
+      const pIndex = patients.findIndex(p => p.id === patientId);
+      if (pIndex >= 0) {
+        patients[pIndex].latest_diagnosis = latestDiagnosis;
+        localStorage.setItem('onco_patients', JSON.stringify(patients));
+      }
+    }
+    
+    return { id: Date.now() };
   }
 };

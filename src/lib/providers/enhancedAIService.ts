@@ -157,50 +157,6 @@ export class EnhancedAIService {
     profileIdOrContext?: string | RequestContext
   ): Promise<AIResponse> {
     let primaryError = '';
-    async function tryServerProxy(profile: any, prompt: string): Promise<AIResponse | null> {
-      try {
-        const resp = await fetch('/api/ai/proxy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            provider: {
-              type: profile.providerType === 'openai_compatible' ? 'openai' : profile.providerType,
-              baseUrl: profile.baseUrl,
-              apiKey: profile.apiKey,
-              model: profile.modelName,
-            },
-            prompt,
-            systemPrompt,
-          }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) {
-          const msg = data?.error || `HTTP ${resp.status}`;
-          return {
-            content: '',
-            provider: profile.name,
-            responseTime: 0,
-            isSuccessful: false,
-            error: String(msg),
-          };
-        }
-        return {
-          content: String(data?.content || ''),
-          provider: profile.name,
-          responseTime: 0,
-          isSuccessful: true,
-          error: '',
-        };
-      } catch (e:any) {
-        return {
-          content: '',
-          provider: profile.name,
-          responseTime: 0,
-          isSuccessful: false,
-          error: e?.message ? String(e.message) : 'Failed to fetch',
-        };
-      }
-    }
     const context: RequestContext = typeof profileIdOrContext === 'string'
       ? {
           type: 'diagnosis',
@@ -270,20 +226,7 @@ export class EnhancedAIService {
       };
     }
 
-    // First, try server proxy to avoid CORS/issues with third-party hosts
-    if (selectedProfile.baseUrl && selectedProfile.apiKey) {
-      const proxyResult = await tryServerProxy(selectedProfile, prompt);
-      if (proxyResult && proxyResult.isSuccessful) {
-        return proxyResult;
-      }
-      // If proxy returned an actionable error, bubble it up; adapters will only add noise
-      if (proxyResult && !proxyResult.isSuccessful && !this.settings.enableFallback) {
-        return proxyResult;
-      }
-      primaryError = proxyResult?.error || primaryError || '';
-    }
-
-    // Get or create adapter (direct call as fallback)
+    // Get or create adapter (direct call)
     const adapter = this.getAdapter(selectedProfile);
     if (!adapter) {
       const errorMsg = `Failed to create adapter for provider "${selectedProfile.name}". Please check your settings and API configuration.`;
@@ -368,6 +311,8 @@ export class EnhancedAIService {
         timestamp: new Date(),
       };
     }
+
+    const startTime = Date.now();
 
     const adapter = this.getAdapter(profile);
     if (!adapter) {
