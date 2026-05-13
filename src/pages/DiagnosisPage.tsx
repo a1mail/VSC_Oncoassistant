@@ -6,35 +6,17 @@ import { Textarea } from '@/components/ui/textarea';
 import { aiService } from '@/lib/aiService';
 import { Brain, AlertCircle, CheckCircle, Loader2, ArrowRight, FileCode2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { esc, openPrintWindow, buildPatientInfoBlock, buildFooter } from '@/lib/htmlUtils';
+import { extractRawAiDebugState, type RawAiDebugState } from '@/lib/rawAiDebug';
+import type { DiagnosisResult } from '@/lib/types/consultation';
+import { calculateAge } from '@/lib/utils/dateUtils';
 
 import { PromptPreviewDialog } from '@/components/PromptPreviewDialog';
 import { RawAiResponseDialog } from '@/components/RawAiResponseDialog';
 
-type RawAiDebugState = {
-  rawResponse: string;
-  rawResponseFormat?: string;
-  rawProvider?: string;
-  rawResponseTime?: number;
-  wasRepaired?: boolean;
-};
-
-function extractRawAiDebugState(value: any): RawAiDebugState | null {
-  if (!value || typeof value !== 'object' || typeof value.rawResponse !== 'string' || !value.rawResponse.trim()) {
-    return null;
-  }
-
-  return {
-    rawResponse: value.rawResponse,
-    rawResponseFormat: value.rawResponseFormat,
-    rawProvider: value.rawProvider,
-    rawResponseTime: value.rawResponseTime,
-    wasRepaired: value.wasRepaired,
-  };
-}
-
 export function DiagnosisPage() {
   const { data, consultationId, updateData, activeAiTask, retryContexts, startAiRequest, clearRetryContext } = useConsultation();
-  const [aiResult, setAiResult] = useState<any>(data.diagnosis || null);
+  const [aiResult, setAiResult] = useState<DiagnosisResult | null>(data.diagnosis || null);
   const [rawDebugState, setRawDebugState] = useState<RawAiDebugState | null>(extractRawAiDebugState(data.diagnosis));
   const [isPromptOpen, setIsPromptOpen] = useState(false);
   const [isRawResponseOpen, setIsRawResponseOpen] = useState(false);
@@ -67,7 +49,7 @@ export function DiagnosisPage() {
 
     // Prepare sanitized data for AI
     const patientContext = {
-      age: data.patient?.birth_date ? new Date().getFullYear() - new Date(data.patient.birth_date).getFullYear() : 'Unknown',
+      age: calculateAge(data.patient?.birth_date) ?? 'Unknown',
       gender: data.patient?.gender,
       menopause_status: data.patient?.menopause_status,
       menopause_basis: data.patient?.menopause_basis,
@@ -98,72 +80,39 @@ export function DiagnosisPage() {
   };
 
   const handleConfirm = () => {
-    updateData('diagnosis', aiResult);
+    updateData('diagnosis', aiResult ?? undefined);
     navigate('../treatment');
   };
 
   const handlePrint = () => {
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(`
-        <html>
-          <head>
-            <title>Диагноз - ${data.patient?.full_name || 'Пациент'}</title>
-            <style>
-              body { font-family: sans-serif; padding: 40px; line-height: 1.6; max-width: 800px; margin: 0 auto; }
-              h1 { font-size: 24px; margin-bottom: 20px; text-align: center; border-bottom: 2px solid #333; padding-bottom: 10px; }
-              h2 { font-size: 18px; margin-top: 30px; margin-bottom: 10px; color: #444; border-bottom: 1px solid #eee; }
-              .patient-info { margin-bottom: 30px; background: #f9f9f9; padding: 15px; border-radius: 5px; }
-              .diagnosis-block { margin-bottom: 20px; }
-              .label { font-weight: bold; color: #555; }
-              .value { margin-top: 5px; white-space: pre-wrap; }
-              .footer { margin-top: 50px; font-size: 12px; text-align: center; color: #888; border-top: 1px solid #eee; padding-top: 20px; }
-            </style>
-          </head>
-          <body>
-            <h1>Медицинское заключение: Диагноз</h1>
-            
-            <div class="patient-info">
-              <div><span class="label">Пациент:</span> ${data.patient?.full_name || 'Не указано'}</div>
-              <div><span class="label">Дата рождения:</span> ${data.patient?.birth_date ? new Date(data.patient.birth_date).toLocaleDateString('ru-RU') : 'Не указано'}</div>
-            </div>
+    if (!aiResult) return;
+    const missingHtml = missingData.length > 0
+      ? `<div class="diagnosis-block"><h2>Рекомендации по дообследованию</h2><ul>${missingData.map((item: string) => `<li>${esc(item)}</li>`).join('')}</ul></div>`
+      : '';
 
-            <div class="diagnosis-block">
-              <h2>Клинический диагноз</h2>
-              <div><span class="label">Код МКБ-10:</span> ${aiResult.icd10}</div>
-              ${aiResult.tnm ? `<div><span class="label">TNM:</span> ${aiResult.tnm}</div>` : ''}
-              <div class="value">${aiResult.working_diagnosis}</div>
-            </div>
-
-            <div class="diagnosis-block">
-              <h2>Обоснование</h2>
-              <div class="value">${aiResult.reasoning}</div>
-            </div>
-
-            ${missingData.length > 0 ? `
-            <div class="diagnosis-block">
-              <h2>Рекомендации по дообследованию</h2>
-              <ul>
-                ${missingData.map((item: string) => `<li>${item}</li>`).join('')}
-              </ul>
-            </div>
-            ` : ''}
-
-            <div class="footer">
-              Сформировано: ${new Date().toLocaleDateString('ru-RU')}
-            </div>
-            <script>
-              window.onload = function() { window.print(); window.close(); }
-            </script>
-          </body>
-        </html>
-      `);
-      printWindow.document.close();
-    }
+    openPrintWindow({
+      title: `Диагноз - ${data.patient?.full_name || 'Пациент'}`,
+      extraCss: '.diagnosis-block { margin-bottom: 20px; }',
+      bodyHtml: `
+        <h1>Медицинское заключение: Диагноз</h1>
+        ${buildPatientInfoBlock(data.patient)}
+        <div class="diagnosis-block">
+          <h2>Клинический диагноз</h2>
+          <div><span class="label">Код МКБ-10:</span> ${esc(aiResult.icd10)}</div>
+          ${aiResult.tnm ? `<div><span class="label">TNM:</span> ${esc(aiResult.tnm)}</div>` : ''}
+          <div class="value">${esc(aiResult.working_diagnosis)}</div>
+        </div>
+        <div class="diagnosis-block">
+          <h2>Обоснование</h2>
+          <div class="value">${esc(aiResult.reasoning)}</div>
+        </div>
+        ${missingHtml}
+        ${buildFooter()}`,
+    });
   };
 
   const handleUpdateDiagnosis = (newDiagnosis: string) => {
-    const updatedResult = { ...aiResult, working_diagnosis: newDiagnosis };
+    const updatedResult = { ...aiResult, working_diagnosis: newDiagnosis } as DiagnosisResult;
     setAiResult(updatedResult);
     updateData('diagnosis', updatedResult);
   };

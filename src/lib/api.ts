@@ -76,8 +76,8 @@ export const api = {
     }
   },
 
-  saveConsultation: async (patientId: number, data: any) => {
-    let allConsultations: Record<string, any> = {};
+  saveConsultation: async (patientId: number, data: Record<string, unknown>) => {
+    let allConsultations: Record<string, unknown> = {};
     try {
       const stored = localStorage.getItem('onco_consultations');
       if (stored) allConsultations = JSON.parse(stored);
@@ -93,7 +93,8 @@ export const api = {
     localStorage.setItem('onco_consultations', JSON.stringify(allConsultations));
     
     // Update latest diagnosis on patient
-    const latestDiagnosis = data?.diagnosis?.working_diagnosis || data?.diagnosis?.diagnosis_text || data?.diagnosis?.clinical_diagnosis || null;
+    const diag = data?.diagnosis as Record<string, unknown> | undefined;
+    const latestDiagnosis = (diag?.working_diagnosis || diag?.diagnosis_text || diag?.clinical_diagnosis || null) as string | null;
     if (latestDiagnosis) {
       const patients = await api.getPatients();
       const pIndex = patients.findIndex(p => p.id === patientId);

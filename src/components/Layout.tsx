@@ -1,8 +1,8 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
-import { User, FileText, Stethoscope, Activity, Brain, Pill, Save, Upload, Download, Settings, HelpCircle, Database, RefreshCw, FileOutput } from 'lucide-react';
+import { User, FileText, Stethoscope, Activity, Brain, Pill, Save, Download, Settings, HelpCircle, Database, RefreshCw, FileOutput } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useConsultation } from '@/context/ConsultationContext';
+import { useConsultation, type ConsultationData } from '@/context/ConsultationContext';
 import { SettingsDialog } from '@/components/SettingsDialog';
 import { HelpDialog } from '@/components/HelpDialog';
 import { LoadPatientDialog } from '@/components/LoadPatientDialog';
@@ -89,10 +89,6 @@ export function Layout() {
     document.body.removeChild(link);
   };
 
-  const handleImportClick = () => {
-    fileInputRef.current?.click();
-  };
-
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -104,7 +100,7 @@ export function Layout() {
         const parsedData = JSON.parse(content);
         // Update all sections
         Object.keys(parsedData).forEach(key => {
-          updateData(key as any, parsedData[key]);
+          updateData(key as keyof ConsultationData, parsedData[key]);
         });
         console.log("Данные успешно загружены");
       } catch (error) {

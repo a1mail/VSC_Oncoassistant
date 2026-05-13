@@ -5,9 +5,17 @@
  * Integrates with profileService for saved API profiles
  */
 
-import { GoogleGenAI } from "@google/genai";
 import { enhancedAIService, EnhancedAIProfile, ProviderFactory } from '@/lib/providers';
+import { removeEmptyFields } from '@/lib/utils/jsonUtils';
+import { normalizeApiKey } from '@/lib/utils/apiKeyUtils';
+import { isViableProfile } from '@/lib/utils/profileUtils';
+import { getCustomSystemPrompt, redactPatientPII, appendDocumentsToPrompt } from '@/lib/utils/promptHelpers';
 import { profileService, SavedProviderProfile } from '@/lib/providers/profileService';
+import type { ConsultationData, ConsultationDocument } from '@/lib/types/consultation';
+
+const REPAIR_PROMPT_SLICE_LIMIT = 8_000;
+const REPAIR_CONTENT_SLICE_LIMIT = 12_000;
+const LOG_PREVIEW_LIMIT = 300;
 
 // Legacy Types (re-exported for backward compatibility)
 export type AIProvider = 'gemini' | 'openai_compatible';
@@ -30,33 +38,6 @@ export interface AISettings {
 const DEFAULT_GEMINI_API_KEY =
   (process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY || '').trim();
 
-function normalizeApiKey(value?: string): string {
-  if (!value) return '';
-
-  let normalized = value
-    .replace(/^\uFEFF/, '')
-    .replace(/[“”]/g, '"')
-    .replace(/[‘’]/g, "'")
-    .trim();
-
-  normalized = normalized.replace(/^["'`]+|["'`]+$/g, '').trim();
-  normalized = normalized.replace(/^authorization\s*:\s*/i, '').trim();
-
-  const bearerMatch = normalized.match(/^bearer\s+(.+)$/i);
-  if (bearerMatch) {
-    normalized = bearerMatch[1].trim();
-  }
-
-  normalized = normalized.replace(/\s+/g, '');
-  return normalized;
-}
-
-function isViableProfile(profile: EnhancedAIProfile): boolean {
-  if (profile.providerType === 'local') {
-    return !!profile.baseUrl?.trim();
-  }
-  return !!profile.apiKey?.trim() && !!profile.baseUrl?.trim();
-}
 
 function buildEnvFallbackProfile(): EnhancedAIProfile | null {
   if (!DEFAULT_GEMINI_API_KEY) {
@@ -88,24 +69,6 @@ function buildEnvFallbackProfile(): EnhancedAIProfile | null {
     isActive: true,
     priority: 8,
   };
-}
-
-// Helper to remove empty fields recursively to save tokens
-function removeEmptyFields(obj: any): any {
-  if (Array.isArray(obj)) {
-    const cleaned = obj.map(removeEmptyFields).filter(v => v !== null && v !== undefined && v !== '' && v !== false && (typeof v !== 'object' || Object.keys(v).length > 0));
-    return cleaned.length > 0 ? cleaned : undefined;
-  } else if (typeof obj === 'object' && obj !== null) {
-    const newObj: any = {};
-    Object.keys(obj).forEach(key => {
-      const value = removeEmptyFields(obj[key]);
-      if (value !== undefined && value !== null && value !== '' && value !== false && (typeof value !== 'object' || Object.keys(value).length > 0)) {
-        newObj[key] = value;
-      }
-    });
-    return Object.keys(newObj).length > 0 ? newObj : undefined;
-  }
-  return obj;
 }
 
 function cleanJson(text: string): string {
@@ -266,7 +229,7 @@ function repairJsonStringLiterals(text: string): string {
   return result;
 }
 
-function parseAiJsonResponse(text: string): any {
+function parseAiJsonResponse(text: string): Record<string, unknown> {
   const normalized = normalizeJsonText(text);
   const candidates = [
     normalized,
@@ -295,7 +258,6 @@ function parseAiJsonResponse(text: string): any {
 
 type StructuredResponseSchema = 'diagnosis' | 'treatment';
 type StructuredResponseFormat = 'json' | 'xml';
-type RetrySourceSection = 'diagnosis' | 'treatment';
 
 type AiDebugMetadata = {
   rawResponse: string;
@@ -336,7 +298,7 @@ function inferStructuredSchema(prompt: string): StructuredResponseSchema {
 
 function appendRawResponseRetryContext(
   prompt: string,
-  section: RetrySourceSection,
+  section: StructuredResponseSchema,
   rawResponse: string,
   options: { provider?: string; previousError?: string } = {},
 ): string {
@@ -346,7 +308,7 @@ function appendRawResponseRetryContext(
   }
 
   const truncatedRawResponse =
-    trimmedRawResponse.length > 12000 ? `${trimmedRawResponse.slice(0, 12000)}\n...[truncated]` : trimmedRawResponse;
+    trimmedRawResponse.length > REPAIR_CONTENT_SLICE_LIMIT ? `${trimmedRawResponse.slice(0, REPAIR_CONTENT_SLICE_LIMIT)}\n...[truncated]` : trimmedRawResponse;
   const providerLine = options.provider ? `Previous model: ${options.provider}` : 'Previous model: unknown';
   const errorLine = options.previousError ? `Previous error: ${options.previousError}` : 'Previous error: parsing/formatting failure';
 
@@ -570,7 +532,7 @@ function parseBooleanValue(value: string): boolean {
   return /^(true|1|yes|да)$/i.test(value.trim());
 }
 
-function parseAiXmlResponse(text: string, schema: StructuredResponseSchema): any {
+function parseAiXmlResponse(text: string, schema: StructuredResponseSchema): Record<string, unknown> {
   const normalized = normalizeXmlResponseText(text);
   const xmlBody = extractRawXmlTag(normalized, 'response') || normalized;
 
@@ -659,7 +621,7 @@ STRICT OUTPUT RULES:
 - Ensure the JSON is parseable by standard JSON.parse.`;
 }
 
-async function repairInvalidJsonResponse(originalPrompt: string, invalidContent: string): Promise<any> {
+async function repairInvalidJsonResponse(originalPrompt: string, invalidContent: string): Promise<Record<string, unknown>> {
   const repairPrompt = `You previously answered a task with invalid JSON.
 
 Return ONLY one valid JSON object.
@@ -672,10 +634,10 @@ If quotes inside values break JSON, escape them correctly.
 If line breaks inside strings break JSON, escape them correctly.
 
 ORIGINAL TASK:
-${originalPrompt.slice(0, 8000)}
+${originalPrompt.slice(0, REPAIR_PROMPT_SLICE_LIMIT)}
 
 INVALID OUTPUT TO REPAIR:
-${invalidContent.slice(0, 12000)}`;
+${invalidContent.slice(0, REPAIR_CONTENT_SLICE_LIMIT)}`;
 
   const repairResponse = await enhancedAIService.generateContent(repairPrompt, undefined, {
     type: 'complex_analysis',
@@ -699,17 +661,17 @@ async function repairInvalidXmlResponse(
   originalPrompt: string,
   invalidContent: string,
   schema: StructuredResponseSchema,
-): Promise<any> {
+): Promise<Record<string, unknown>> {
   const repairPrompt = `${buildStrictXmlPrompt(
     'You previously answered a task with invalid XML. Repair the answer and preserve its medical meaning.',
     schema,
   )}
 
 ORIGINAL TASK:
-${originalPrompt.slice(0, 8000)}
+${originalPrompt.slice(0, REPAIR_PROMPT_SLICE_LIMIT)}
 
 INVALID OUTPUT TO REPAIR:
-${invalidContent.slice(0, 12000)}`;
+${invalidContent.slice(0, REPAIR_CONTENT_SLICE_LIMIT)}`;
 
   const repairResponse = await enhancedAIService.generateContent(repairPrompt, undefined, {
     type: 'complex_analysis',
@@ -764,7 +726,7 @@ function annotateAbbreviationsInText(text: string): string {
   }, text);
 }
 
-function annotateAbbreviations(value: any): any {
+function annotateAbbreviations(value: unknown): unknown {
   if (typeof value === 'string') {
     return annotateAbbreviationsInText(value);
   }
@@ -772,7 +734,7 @@ function annotateAbbreviations(value: any): any {
     return value.map(annotateAbbreviations);
   }
   if (value && typeof value === 'object') {
-    return Object.entries(value).reduce<Record<string, any>>((result, [key, nested]) => {
+    return Object.entries(value as Record<string, unknown>).reduce<Record<string, unknown>>((result, [key, nested]) => {
       result[key] = annotateAbbreviations(nested);
       return result;
     }, {});
@@ -909,8 +871,8 @@ function syncProfilesFromService(): void {
       const enhanced = savedToEnhancedProfile(fullProfile);
       convertedProfiles.push(enhanced);
       console.log(`    ✓ Converted successfully`);
-    } catch (error: any) {
-      const errorMsg = error.message || `Unknown error converting profile ${saved.name}`;
+    } catch (error: unknown) {
+      const errorMsg = error instanceof Error ? error.message : `Unknown error converting profile ${saved.name}`;
       console.error(`  ❌ ${errorMsg}`);
       errors.push(errorMsg);
     }
@@ -986,9 +948,7 @@ function syncProfilesFromService(): void {
   // Update enhancedAIService ONLY with converted profiles
   // Remove old default profiles that don't have valid config
   const settings = enhancedAIService.getSettings();
-  const mergedProfiles = finalProfiles;
-  if (!mergedProfiles.some(isViableProfile)) {
-    console.warn('⚠️ Converted profiles are not viable; keeping current settings');
+  if (!finalProfiles.some(isViableProfile)) {
     const envFallback = buildEnvFallbackProfile();
     if (envFallback) {
       enhancedAIService.saveSettings({
@@ -1000,18 +960,15 @@ function syncProfilesFromService(): void {
     }
     return;
   }
-  
-  console.log(`\n📝 Updating enhancedAIService with ${mergedProfiles.length} profiles`);
-  
+
   try {
     enhancedAIService.saveSettings({
       ...settings,
-      profiles: mergedProfiles,
+      profiles: finalProfiles,
       activeProfileId: activeId!,
     });
-    console.log('✅ Profiles synced and saved to enhancedAIService\n');
   } catch (error) {
-    console.error('❌ Failed to save synced profiles:', error);
+    console.error('Failed to save synced profiles:', error);
   }
 }
 
@@ -1126,33 +1083,11 @@ export const aiService = {
     migrateToEnhanced(settings);
   },
 
-  prepareDiagnosisPrompt: (patientData: any, documents: any[] = []) => {
-    let customSystemPrompt = '';
-    try {
-      const storedPrompts = localStorage.getItem('onco_prompts');
-      if (storedPrompts) {
-        const prompts = JSON.parse(storedPrompts);
-        if (prompts.length > 0 && prompts[0].content) {
-          customSystemPrompt = prompts[0].content;
-        }
-      }
-    } catch {}
-
-    const systemPrompt = customSystemPrompt || `You are an expert oncologist assistant operating under the jurisdiction of the Russian Federation.
-You strictly adhere to the Clinical Recommendations (CR RF) approved by the Ministry of Health.`;
-
-    const safePatientData = { ...patientData };
-    if (safePatientData.patient) {
-      safePatientData.patient = {
-        ...safePatientData.patient,
-        full_name: "Patient X",
-        phone: "[REDACTED]",
-        address: "[REDACTED]",
-        birth_date: safePatientData.patient.birth_date ? safePatientData.patient.birth_date.substring(0, 4) : "Unknown"
-      };
-    }
-
-    const optimizedData = removeEmptyFields(safePatientData);
+  prepareDiagnosisPrompt: (patientData: ConsultationData, documents: ConsultationDocument[] = []) => {
+    const systemPrompt = getCustomSystemPrompt(
+      `You are an expert oncologist assistant operating under the jurisdiction of the Russian Federation.\nYou strictly adhere to the Clinical Recommendations (CR RF) approved by the Ministry of Health.`,
+    );
+    const optimizedData = redactPatientPII(patientData as unknown as Record<string, unknown>);
 
     let prompt = `
 ${systemPrompt}
@@ -1163,16 +1098,7 @@ Patient Data:
 ${JSON.stringify(optimizedData, null, 2)}
     `;
 
-    if (documents && documents.length > 0) {
-      prompt += `\n\nAttached Medical Documents:\n`;
-      documents.forEach((doc, index) => {
-        if (doc.type === 'text') {
-          prompt += `\n--- Document ${index + 1} (${doc.name}) ---\n${doc.content}\n`;
-        } else {
-          prompt += `\n--- Document ${index + 1} (${doc.name}) ---\n[Image Content Attached]\n`;
-        }
-      });
-    }
+    prompt = appendDocumentsToPrompt(prompt, documents);
 
     prompt += `
 INSTRUCTIONS:
@@ -1199,32 +1125,11 @@ Do not use Markdown formatting in the response, just raw JSON.
     return prompt;
   },
 
-  prepareTreatmentPrompt: (diagnosisData: any, patientData: any, documents: any[] = []) => {
-    let customSystemPrompt = '';
-    try {
-      const storedPrompts = localStorage.getItem('onco_prompts');
-      if (storedPrompts) {
-        const prompts = JSON.parse(storedPrompts);
-        if (prompts.length > 0 && prompts[0].content) {
-          customSystemPrompt = prompts[0].content;
-        }
-      }
-    } catch {}
-
-    const systemPrompt = customSystemPrompt || `You are an expert oncologist assistant operating under the jurisdiction of the Russian Federation.`;
-
-    const safePatientData = { ...patientData };
-    if (safePatientData.patient) {
-      safePatientData.patient = {
-        ...safePatientData.patient,
-        full_name: "Patient X",
-        phone: "[REDACTED]",
-        address: "[REDACTED]",
-        birth_date: safePatientData.patient.birth_date ? safePatientData.patient.birth_date.substring(0, 4) : "Unknown"
-      };
-    }
-
-    const optimizedPatientData = removeEmptyFields(safePatientData);
+  prepareTreatmentPrompt: (diagnosisData: Record<string, unknown>, patientData: ConsultationData, documents: ConsultationDocument[] = []) => {
+    const systemPrompt = getCustomSystemPrompt(
+      `You are an expert oncologist assistant operating under the jurisdiction of the Russian Federation.`,
+    );
+    const optimizedPatientData = redactPatientPII(patientData as unknown as Record<string, unknown>);
     const optimizedDiagnosis = removeEmptyFields(diagnosisData);
 
     let prompt = `
@@ -1235,16 +1140,7 @@ Diagnosis: ${JSON.stringify(optimizedDiagnosis)}
 Patient Context: ${JSON.stringify(optimizedPatientData)}
     `;
 
-    if (documents && documents.length > 0) {
-      prompt += `\n\nAttached Medical Documents:\n`;
-      documents.forEach((doc, index) => {
-        if (doc.type === 'text') {
-          prompt += `\n--- Document ${index + 1} (${doc.name}) ---\n${doc.content}\n`;
-        } else {
-          prompt += `\n--- Document ${index + 1} (${doc.name}) ---\n[Image Content Attached]\n`;
-        }
-      });
-    }
+    prompt = appendDocumentsToPrompt(prompt, documents);
 
     prompt += `
 INSTRUCTIONS:
@@ -1279,25 +1175,22 @@ Do not use Markdown, just raw JSON.
 
   appendRawResponseRetryContext: (
     prompt: string,
-    section: RetrySourceSection,
+    section: StructuredResponseSchema,
     rawResponse: string,
     options: { provider?: string; previousError?: string } = {},
   ) => {
     return appendRawResponseRetryContext(prompt, section, rawResponse, options);
   },
 
-  executeRawPrompt: async (prompt: string, documents: any[] = []) => {
+  executeRawPrompt: async (prompt: string, documents: ConsultationDocument[] = []) => {
     try {
       await refreshActiveOpenRouterProfileMetadata();
 
-      // Sync profiles from profileService before generating content
-      syncProfilesFromService();
-
+      const strictPrompt = aiService.getFinalExecutionPrompt(prompt);
       const schema = inferStructuredSchema(prompt);
       const activeProfile = enhancedAIService.getActiveProfile();
       const responseFormat: StructuredResponseFormat =
         shouldUseXmlResponseFormat(activeProfile, schema) ? 'xml' : 'json';
-      const strictPrompt = aiService.getFinalExecutionPrompt(prompt);
 
       const response = await enhancedAIService.generateContent(strictPrompt, undefined, {
         type: schema === 'treatment' ? 'treatment' : documents.length > 0 ? 'complex_analysis' : 'diagnosis',
@@ -1321,7 +1214,7 @@ Do not use Markdown, just raw JSON.
           responseFormat === 'xml'
             ? parseAiXmlResponse(content, schema)
             : parseAiJsonResponse(content);
-        return attachAiDebugMetadata(annotateAbbreviations(parsed), {
+        return attachAiDebugMetadata(annotateAbbreviations(parsed) as Record<string, unknown>, {
           rawResponse: content,
           rawResponseFormat: responseFormat,
           rawProvider: response.provider,
@@ -1332,7 +1225,7 @@ Do not use Markdown, just raw JSON.
         console.warn(
           `Primary AI response returned invalid ${responseFormat.toUpperCase()}, attempting repair pass...`,
         );
-        console.warn(`Invalid ${responseFormat.toUpperCase()} preview:`, content.slice(0, 300));
+        console.warn(`Invalid ${responseFormat.toUpperCase()} preview:`, content.slice(0, LOG_PREVIEW_LIMIT));
 
         const debugMetadata: AiDebugMetadata = {
           rawResponse: content,
@@ -1347,7 +1240,7 @@ Do not use Markdown, just raw JSON.
             responseFormat === 'xml'
               ? await repairInvalidXmlResponse(strictPrompt, content, schema)
               : await repairInvalidJsonResponse(strictPrompt, content);
-          return attachAiDebugMetadata(annotateAbbreviations(repaired), debugMetadata);
+          return attachAiDebugMetadata(annotateAbbreviations(repaired) as Record<string, unknown>, debugMetadata);
         } catch (repairError) {
           const repairMessage =
             repairError instanceof Error && repairError.message
@@ -1356,23 +1249,13 @@ Do not use Markdown, just raw JSON.
           throw createAiExecutionError(repairMessage, debugMetadata);
         }
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (error instanceof Error) {
         throw error;
       }
 
-      throw new Error(error?.message || 'Failed to execute prompt');
+      throw new Error(String(error) || 'Failed to execute prompt');
     }
-  },
-
-  diagnose: async (patientData: any) => {
-    const prompt = aiService.prepareDiagnosisPrompt(patientData);
-    return await aiService.executeRawPrompt(prompt);
-  },
-
-  recommendTreatment: async (diagnosisData: any, patientData: any) => {
-    const prompt = aiService.prepareTreatmentPrompt(diagnosisData, patientData);
-    return await aiService.executeRawPrompt(prompt);
   },
 
   /**

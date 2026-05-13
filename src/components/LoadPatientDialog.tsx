@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { api, Patient } from '@/lib/api';
-import { useConsultation } from '@/context/ConsultationContext';
+import { useConsultation, type ConsultationData } from '@/context/ConsultationContext';
 import { Loader2, Search, User, X, Trash2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 
@@ -62,7 +62,7 @@ export function LoadPatientDialog({ isOpen, onClose }: LoadPatientDialogProps) {
         const parsedData = JSON.parse(consultation.data);
         // Update all sections with loaded data
         Object.keys(parsedData).forEach(key => {
-          updateData(key as any, parsedData[key]);
+          updateData(key as keyof ConsultationData, parsedData[key]);
         });
         // Ensure patient data is also set/updated from the DB record
         updateData('patient', patient);
@@ -71,8 +71,8 @@ export function LoadPatientDialog({ isOpen, onClose }: LoadPatientDialogProps) {
         // If no consultation exists, just load the patient data
         updateData('patient', patient);
         // Clear other sections
-        ['anamnesis', 'exam', 'diagnostics', 'diagnosis', 'treatment'].forEach(key => {
-            updateData(key as any, null);
+        (['anamnesis', 'exam', 'diagnostics', 'diagnosis', 'treatment'] as const).forEach(key => {
+            updateData(key, undefined);
         });
         console.log(`Пациент ${patient.full_name} загружен (нет сохраненных консультаций)`);
       }

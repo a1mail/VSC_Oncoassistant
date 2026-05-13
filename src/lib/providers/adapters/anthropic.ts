@@ -5,6 +5,12 @@
 import { EnhancedAIProfile, AIResponse, HealthCheckResult } from '../types';
 import { BaseProviderAdapter, GenerationOptions } from '../adapter';
 
+interface AnthropicResponse {
+  content: { text: string }[];
+  usage?: { input_tokens?: number; output_tokens?: number };
+  error?: { message?: string };
+}
+
 export class AnthropicAdapter extends BaseProviderAdapter {
   private baseUrl: string = 'https://api.anthropic.com/v1';
   private apiKey: string;
@@ -157,7 +163,7 @@ export class AnthropicAdapter extends BaseProviderAdapter {
     return result.isHealthy;
   }
 
-  private async makeRequest(endpoint: string, payload: any): Promise<any> {
+  private async makeRequest(endpoint: string, payload: Record<string, unknown>): Promise<AnthropicResponse> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-api-key': this.apiKey,

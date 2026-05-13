@@ -237,7 +237,7 @@ export function DiagnosticsPage() {
                     options={stringsToOptions(
                       IMAGING_FINDINGS[method as keyof typeof IMAGING_FINDINGS] || []
                     )}
-                    selected={watch(`imaging_findings_${method}`) || []}
+                    selected={(watch(`imaging_findings_${method}`) as string[] | undefined) || []}
                     onChange={(newFindings) => {
                       setValue(`imaging_findings_${method}`, newFindings);
                       handleSave();

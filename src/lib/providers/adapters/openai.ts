@@ -5,12 +5,48 @@
 
 import { EnhancedAIProfile, AIResponse, HealthCheckResult } from '../types';
 import { BaseProviderAdapter, GenerationOptions } from '../adapter';
+import { normalizeApiKey } from '@/lib/utils/apiKeyUtils';
+
+interface OpenAIContentPart {
+  type?: string;
+  text?: string;
+  content?: string;
+}
+
+interface OpenAIChoice {
+  message?: {
+    content?: string | OpenAIContentPart[];
+    reasoning?: string;
+  };
+  text?: string;
+  finish_reason?: string;
+  stop_reason?: string;
+}
+
+interface OpenAIResponse {
+  choices?: OpenAIChoice[];
+  output_text?: string;
+  usage?: { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number };
+  error?: { code?: string; message?: string };
+}
 
 export class OpenAIAdapter extends BaseProviderAdapter {
   private baseUrl: string;
   private apiKey: string;
   private organizationId?: string;
   private static readonly MAX_CONTINUATION_ATTEMPTS = 2;
+  private static readonly DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+  private static readonly EXTENDED_REQUEST_TIMEOUT_MS = 180_000;
+  private static readonly MAX_TOKENS_FREE = 900;
+  private static readonly MAX_TOKENS_STRUCTURED = 3200;
+  private static readonly MAX_TOKENS_CONTINUATION = 1800;
+  private static readonly MIN_RESPONSE_LENGTH_FOR_CONTINUE = 120;
+  private static readonly OVERLAP_SEARCH_LIMIT = 200;
+  private static readonly OVERLAP_MIN_SIZE = 20;
+  private static readonly RETRY_JITTER_MS = 450;
+  private static readonly DEFAULT_TEMPERATURE = 0.7;
+  private static readonly STRUCTURED_TEMPERATURE = 0.15;
+  private static readonly FREE_MODEL_TEMPERATURE = 0.2;
 
   /**
    * Some OpenRouter free/preview models are unstable with strict OpenAI JSON mode
@@ -25,43 +61,25 @@ export class OpenAIAdapter extends BaseProviderAdapter {
    */
   private static readonly OPENROUTER_FREE_RETRY_DELAYS_MS = [1800, 4200, 8200];
 
-  private normalizeApiKey(value?: string): string {
-    if (!value) return '';
-
-    let normalized = value
-      .replace(/^\uFEFF/, '')
-      .replace(/[“”]/g, '"')
-      .replace(/[‘’]/g, "'")
-      .trim();
-
-    normalized = normalized.replace(/^["'`]+|["'`]+$/g, '').trim();
-    normalized = normalized.replace(/^authorization\s*:\s*/i, '').trim();
-
-    const bearerMatch = normalized.match(/^bearer\s+(.+)$/i);
-    if (bearerMatch) {
-      normalized = bearerMatch[1].trim();
-    }
-
-    return normalized.replace(/\s+/g, '');
-  }
-
   constructor(profile: EnhancedAIProfile) {
     super(profile);
     // Trim trailing slashes from baseUrl to prevent duplication
     this.baseUrl = (profile.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
-    this.apiKey = this.normalizeApiKey(profile.apiKey || '');
+    this.apiKey = normalizeApiKey(profile.apiKey || '');
     this.organizationId = profile.organizationId;
-    
-    console.log(`\n🔧 OpenAI Adapter Initialized:`);
-    console.log(`   Provider: ${profile.name}`);
-    console.log(`   Original base URL: ${profile.baseUrl}`);
-    console.log(`   Normalized base URL: ${this.baseUrl}`);
-    console.log(`   Model: ${profile.modelName}`);
-    console.log(`   API Key: ${this.apiKey ? '***' + this.apiKey.slice(-4) : 'MISSING'}\n`);
   }
 
   private isOpenRouterProfile(): boolean {
     return this.profile.providerType === 'openrouter' || this.baseUrl.includes('openrouter.ai');
+  }
+
+  private getRequestTimeoutMs(): number {
+    const modelName = this.profile.modelName.toLowerCase();
+    if (this.profile.providerType === 'aitunnel' && modelName.includes('gpt-5.5-pro')) {
+      return OpenAIAdapter.EXTENDED_REQUEST_TIMEOUT_MS;
+    }
+
+    return OpenAIAdapter.DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   private getOpenRouterModelInfo() {
@@ -115,7 +133,7 @@ export class OpenAIAdapter extends BaseProviderAdapter {
 
       const requestStrategy = this.getStructuredOutputStrategy(prompt);
       const payloadVariants = this.buildPayloadVariants(messages, options, requestStrategy);
-      let response: any;
+      let response: OpenAIResponse | undefined;
       let lastError: unknown;
 
       for (const variant of payloadVariants) {
@@ -155,18 +173,19 @@ export class OpenAIAdapter extends BaseProviderAdapter {
         this.shouldAutoContinueResponse(response, responseText)
       ) {
         continuationAttempts += 1;
-        responseText = await this.continueTruncatedResponse(
+        const continuationResult = await this.continueTruncatedResponse(
           messages,
           responseText,
           options,
           requestStrategy,
         );
+        responseText = continuationResult.text;
         response = {
           ...response,
           choices: [
             {
               ...(response.choices?.[0] || {}),
-              finish_reason: 'stop',
+              finish_reason: continuationResult.finishReason ?? 'stop',
             },
           ],
         };
@@ -270,9 +289,9 @@ export class OpenAIAdapter extends BaseProviderAdapter {
 
   private async makeRequest(
     endpoint: string,
-    payload: any = {},
+    payload: Record<string, unknown> = {},
     method: string = 'POST'
-  ): Promise<any> {
+  ): Promise<OpenAIResponse> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${this.apiKey}`,
@@ -282,8 +301,7 @@ export class OpenAIAdapter extends BaseProviderAdapter {
       headers['OpenAI-Organization'] = this.organizationId;
     }
 
-    // Add required headers for OpenRouter
-    if (this.profile.providerType === 'openrouter' || this.baseUrl.includes('openrouter.ai')) {
+    if (this.isOpenRouterProfile()) {
       const appOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
       headers['HTTP-Referer'] = appOrigin;
       headers['X-Title'] = 'OncoAssistant';
@@ -294,35 +312,40 @@ export class OpenAIAdapter extends BaseProviderAdapter {
     }
 
     const url = `${this.baseUrl}${endpoint}`;
-    console.log(`\n🔗 OpenAI Adapter API Request:`);
-    console.log(`   Method: ${method}`);
-    console.log(`   Base URL: ${this.baseUrl}`);
-    console.log(`   Endpoint: ${endpoint}`);
-    console.log(`   Full URL: ${url}`);
-    console.log(`   Headers: ${JSON.stringify(Object.keys(headers))}`);
-    
+
+    const controller = new AbortController();
+    const requestTimeoutMs = this.getRequestTimeoutMs();
+    const timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
+
     const options: RequestInit = {
       method,
       headers,
+      signal: controller.signal,
     };
 
     if (method !== 'GET') {
       options.body = JSON.stringify(payload);
     }
 
-    const response = await fetch(url, options);
+    try {
+      const response = await fetch(url, options);
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const errorMsg = errorData.error?.message || response.statusText;
-      const mappedError = this.mapApiError(response.status, errorMsg, errorData);
-      console.error(`❌ API Error ${response.status}: ${errorMsg}`);
-      console.error(`   Requested URL: ${url}`);
-      console.error(`   Response body:`, errorData);
-      throw new Error(mappedError);
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMsg = errorData.error?.message || response.statusText;
+        const mappedError = this.mapApiError(response.status, errorMsg, errorData);
+        throw new Error(mappedError);
+      }
+
+      return response.json();
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error(`Request to ${this.profile.name} timed out after ${requestTimeoutMs / 1000}s`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    return response.json();
   }
 
   private getStructuredOutputStrategy(prompt: string): 'none' | 'native_json' | 'prompt_only' {
@@ -362,7 +385,7 @@ export class OpenAIAdapter extends BaseProviderAdapter {
     const basePayload = {
       model: this.profile.modelName,
       messages,
-      temperature: options.temperature ?? (strategy === 'none' ? (isOpenRouterFree ? 0.2 : 0.7) : 0.15),
+      temperature: options.temperature ?? (strategy === 'none' ? (isOpenRouterFree ? OpenAIAdapter.FREE_MODEL_TEMPERATURE : OpenAIAdapter.DEFAULT_TEMPERATURE) : OpenAIAdapter.STRUCTURED_TEMPERATURE),
       max_tokens: safeMaxTokens,
     };
 
@@ -445,7 +468,7 @@ export class OpenAIAdapter extends BaseProviderAdapter {
     return Math.min(requested, 3200);
   }
 
-  private getFinishReason(response: any): string {
+  private getFinishReason(response: OpenAIResponse): string {
     return String(
       response?.choices?.[0]?.finish_reason ||
       response?.choices?.[0]?.stop_reason ||
@@ -457,7 +480,7 @@ export class OpenAIAdapter extends BaseProviderAdapter {
    * Paid/stable models often stop due to token limits while still producing valid content.
    * We resume generation only when the provider explicitly signals a length stop.
    */
-  private shouldAutoContinueResponse(response: any, responseText: string): boolean {
+  private shouldAutoContinueResponse(response: OpenAIResponse, responseText: string): boolean {
     if (this.isOpenRouterFreeModel()) {
       return false;
     }
@@ -467,15 +490,15 @@ export class OpenAIAdapter extends BaseProviderAdapter {
       return false;
     }
 
-    return responseText.trim().length > 120;
+    return responseText.trim().length > OpenAIAdapter.MIN_RESPONSE_LENGTH_FOR_CONTINUE;
   }
 
   private mergeContinuation(baseText: string, continuationText: string): string {
     const base = baseText.trimEnd();
     const continuation = continuationText.trimStart();
-    const overlapLimit = Math.min(base.length, continuation.length, 200);
+    const overlapLimit = Math.min(base.length, continuation.length, OpenAIAdapter.OVERLAP_SEARCH_LIMIT);
 
-    for (let size = overlapLimit; size >= 20; size -= 1) {
+    for (let size = overlapLimit; size >= OpenAIAdapter.OVERLAP_MIN_SIZE; size -= 1) {
       if (base.slice(-size) === continuation.slice(0, size)) {
         return `${base}${continuation.slice(size)}`;
       }
@@ -493,7 +516,7 @@ export class OpenAIAdapter extends BaseProviderAdapter {
     partialText: string,
     options: GenerationOptions,
     strategy: 'none' | 'native_json' | 'prompt_only',
-  ): Promise<string> {
+  ): Promise<{ text: string; finishReason: string | undefined }> {
     const continuationInstruction =
       strategy === 'none'
         ? 'Continue exactly from where you stopped. Return only the remaining text without repeating previous sentences.'
@@ -512,7 +535,7 @@ export class OpenAIAdapter extends BaseProviderAdapter {
     };
     const variants = this.buildPayloadVariants(continuationMessages, continuationOptions, strategy);
 
-    let continuationResponse: any;
+    let continuationResponse: unknown;
     let lastError: unknown;
 
     for (const variant of variants) {
@@ -535,11 +558,13 @@ export class OpenAIAdapter extends BaseProviderAdapter {
     }
 
     const continuationText = this.extractResponseText(continuationResponse);
+    const finishReason = this.getFinishReason(continuationResponse) || undefined;
+
     if (!continuationText) {
-      return partialText;
+      return { text: partialText, finishReason };
     }
 
-    return this.mergeContinuation(partialText, continuationText);
+    return { text: this.mergeContinuation(partialText, continuationText), finishReason };
   }
 
   private isCompatibleWithSimplerPayload(message: string): boolean {
@@ -572,7 +597,7 @@ export class OpenAIAdapter extends BaseProviderAdapter {
         ? OpenAIAdapter.OPENROUTER_FREE_RETRY_DELAYS_MS[attempt]
         : fallbackDelay * Math.pow(2, attempt);
 
-    const jitter = Math.floor(Math.random() * 450);
+    const jitter = Math.floor(Math.random() * OpenAIAdapter.RETRY_JITTER_MS);
     return baseDelay + jitter;
   }
 
@@ -580,12 +605,16 @@ export class OpenAIAdapter extends BaseProviderAdapter {
     await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  private isTransientError(message: string): boolean {
+    return /api error (429|502|503|504)|rate limit|too many requests|overloaded|temporarily unavailable|timed out/i.test(message);
+  }
+
   private async executeVariantWithRetries(variant: {
     payload: Record<string, unknown>;
     canFallback: boolean;
     retries: number;
     retryDelay: number;
-  }): Promise<any> {
+  }): Promise<OpenAIResponse> {
     let lastError: unknown;
 
     for (let attempt = 0; attempt < variant.retries; attempt++) {
@@ -594,14 +623,13 @@ export class OpenAIAdapter extends BaseProviderAdapter {
       } catch (error) {
         lastError = error;
         const message = error instanceof Error ? error.message : String(error);
-        const canRetrySameVariant =
-          attempt < variant.retries - 1 && this.isTransientOpenRouterFreeError(message);
+        const isTransient = this.isOpenRouterFreeModel()
+          ? this.isTransientOpenRouterFreeError(message)
+          : this.isTransientError(message);
+        const canRetrySameVariant = attempt < variant.retries - 1 && isTransient;
 
         if (canRetrySameVariant) {
           const delay = this.getRetryDelayMs(attempt, variant.retryDelay);
-          console.warn(
-            `⏳ OpenRouter free model retry ${attempt + 1}/${variant.retries - 1} for "${this.profile.modelName}" after ${delay}ms`,
-          );
           await this.wait(delay);
           continue;
         }
@@ -613,7 +641,7 @@ export class OpenAIAdapter extends BaseProviderAdapter {
     throw (lastError instanceof Error ? lastError : new Error(String(lastError || 'Unknown request failure')));
   }
 
-  private mapApiError(status: number, errorMsg: string, errorData: any): string {
+  private mapApiError(status: number, errorMsg: string, errorData: OpenAIResponse | null): string {
     const raw = typeof errorMsg === 'string' ? errorMsg : String(errorMsg || '');
     const isOpenRouter = this.isOpenRouterProfile();
 
@@ -645,7 +673,7 @@ export class OpenAIAdapter extends BaseProviderAdapter {
    * Extracts text from OpenAI-compatible responses because some providers
    * return `message.content` as an array or put text into fallback fields.
    */
-  private extractResponseText(response: any): string {
+  private extractResponseText(response: OpenAIResponse): string {
     const choice = response?.choices?.[0];
     const message = choice?.message;
     const content = message?.content;
@@ -656,7 +684,7 @@ export class OpenAIAdapter extends BaseProviderAdapter {
 
     if (Array.isArray(content)) {
       const text = content
-        .map((part: any) => {
+        .map((part: OpenAIContentPart | string) => {
           if (typeof part === 'string') return part;
           if (typeof part?.text === 'string') return part.text;
           if (typeof part?.content === 'string') return part.content;

@@ -4,12 +4,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { FileText, Image as ImageIcon, Trash2, Eye, Upload, ArrowRight } from 'lucide-react';
+import { FileText, Image as ImageIcon, Trash2, Eye, Upload, ArrowRight, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import type { ConsultationDocument } from '@/lib/types/consultation';
 
 export function DocumentsPage() {
   const { data, updateData } = useConsultation();
   const [isUploading, setIsUploading] = useState(false);
+  const [previewDocument, setPreviewDocument] = useState<ConsultationDocument | null>(null);
   const navigate = useNavigate();
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -147,12 +149,10 @@ export function DocumentsPage() {
                   Использовать для ИИ
                 </label>
                 
-                {doc.type === 'text' && (
-                   <Button variant="ghost" size="sm" onClick={() => console.log(doc.content)}>
-                     <Eye className="w-4 h-4 mr-1" />
-                     Просмотр
-                   </Button>
-                )}
+                <Button variant="ghost" size="sm" onClick={() => setPreviewDocument(doc)}>
+                  <Eye className="w-4 h-4 mr-1" />
+                  Просмотр
+                </Button>
               </div>
             </CardContent>
           </Card>
@@ -166,6 +166,38 @@ export function DocumentsPage() {
           </div>
         )}
       </div>
+
+      {previewDocument && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex justify-center overflow-y-auto p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl p-6 relative my-8 h-fit">
+            <button
+              onClick={() => setPreviewDocument(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"
+              aria-label="Закрыть просмотр документа"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <h3 className="text-xl font-semibold mb-4 text-slate-900 pr-10 break-words">
+              {previewDocument.name}
+            </h3>
+
+            <div className="max-h-[70vh] overflow-auto rounded-lg border border-slate-200 bg-slate-50">
+              {previewDocument.type === 'image' ? (
+                <img
+                  src={previewDocument.content}
+                  alt={previewDocument.name}
+                  className="w-full h-auto object-contain"
+                />
+              ) : (
+                <pre className="p-4 text-sm text-slate-700 whitespace-pre-wrap break-words font-mono">
+                  {previewDocument.content}
+                </pre>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

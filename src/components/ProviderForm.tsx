@@ -160,10 +160,10 @@ export function ProviderForm({ profile, onSave, onCancel }: ProviderFormProps) {
         isHealthy: result.isHealthy,
         error: result.error
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       setTestResult({
         isHealthy: false,
-        error: error.message || 'Ошибка при тестировании соединения'
+        error: error instanceof Error ? error.message : 'Ошибка при тестировании соединения'
       });
     } finally {
       setIsTesting(false);

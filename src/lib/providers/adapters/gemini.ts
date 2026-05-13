@@ -6,6 +6,26 @@ import { GoogleGenAI } from "@google/genai";
 import { EnhancedAIProfile, AIResponse, HealthCheckResult } from '../types';
 import { BaseProviderAdapter, GenerationOptions } from '../adapter';
 
+type GeminiGenerateContentArgs = Parameters<GoogleGenAI['models']['generateContent']>[0];
+type GeminiGenerateContentResult = Awaited<ReturnType<GoogleGenAI['models']['generateContent']>>;
+
+interface GeminiCandidatePart {
+  text?: string;
+}
+
+interface GeminiCandidateContent {
+  parts?: GeminiCandidatePart[];
+}
+
+interface GeminiCandidate {
+  content?: GeminiCandidateContent;
+}
+
+interface GeminiResponseLike {
+  text?: () => string;
+  candidates?: GeminiCandidate[];
+}
+
 export class GeminiAdapter extends BaseProviderAdapter {
   private client: GoogleGenAI | null = null;
   private initError: string | null = null;
@@ -28,6 +48,23 @@ export class GeminiAdapter extends BaseProviderAdapter {
     this.client = new GoogleGenAI({
       apiKey: this.profile.apiKey,
     });
+  }
+
+  private buildGenerateContentPayload(prompt: string): GeminiGenerateContentArgs {
+    return {
+      model: this.profile.modelName,
+      contents: [{ parts: [{ text: prompt }] }],
+    };
+  }
+
+  private extractResponseText(result: GeminiGenerateContentResult): string {
+    const response = result as GeminiResponseLike;
+    const directText = response.text?.();
+    if (typeof directText === 'string' && directText.trim()) {
+      return directText;
+    }
+
+    return response.candidates?.[0]?.content?.parts?.[0]?.text || '';
   }
 
   async generateContent(
@@ -59,15 +96,12 @@ export class GeminiAdapter extends BaseProviderAdapter {
     const startTime = Date.now();
     try {
       const result = await this.retryWithBackoff(
-        () => this.client!.models.generateContent({
-          model: this.profile.modelName,
-          contents: [{ parts: [{ text: prompt }] }],
-        } as any),
+        () => this.client!.models.generateContent(this.buildGenerateContentPayload(prompt)),
         options.retryCount ?? 3,
         options.retryDelay ?? 1000
       );
 
-      const responseText = (result as any).text?.() || (result as any).candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const responseText = this.extractResponseText(result);
       const responseTime = Date.now() - startTime;
 
       // Update metrics
@@ -121,10 +155,9 @@ export class GeminiAdapter extends BaseProviderAdapter {
     const startTime = Date.now();
     try {
       // Simple test prompt
-      await this.client.models.generateContent({
-        model: this.profile.modelName,
-        contents: [{ parts: [{ text: 'Test connection - respond with "OK"' }] }],
-      } as any);
+      await this.client.models.generateContent(
+        this.buildGenerateContentPayload('Test connection - respond with "OK"')
+      );
 
       const responseTime = Date.now() - startTime;
       this.profile.metrics.isHealthy = true;

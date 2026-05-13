@@ -3,7 +3,9 @@
  * Defines the contract that all provider implementations must follow
  */
 
-import { EnhancedAIProfile, AIResponse, HealthCheckResult } from './types';
+import { EnhancedAIProfile, AIResponse, HealthCheckResult, ProviderCapabilities } from './types';
+import { removeEmptyFields } from '@/lib/utils/jsonUtils';
+import { cleanJsonResponse } from '@/lib/utils/jsonUtils';
 
 export interface AIProviderAdapter {
   /**
@@ -34,7 +36,7 @@ export interface AIProviderAdapter {
   /**
    * Get provider capabilities
    */
-  getCapabilities(): Promise<any>;
+  getCapabilities(): Promise<ProviderCapabilities>;
 
   /**
    * Validate the configuration
@@ -73,7 +75,7 @@ export abstract class BaseProviderAdapter implements AIProviderAdapter {
 
   abstract estimateCost(prompt: string): Promise<number>;
 
-  abstract getCapabilities(): Promise<any>;
+  abstract getCapabilities(): Promise<ProviderCapabilities>;
 
   abstract validateConfiguration(): Promise<boolean>;
 
@@ -102,7 +104,7 @@ export abstract class BaseProviderAdapter implements AIProviderAdapter {
     maxRetries: number = 3,
     initialDelayMs: number = 1000
   ): Promise<T> {
-    let lastError: any;
+    let lastError: unknown;
     for (let i = 0; i < maxRetries; i++) {
       try {
         return await fn();
@@ -117,40 +119,11 @@ export abstract class BaseProviderAdapter implements AIProviderAdapter {
     throw lastError;
   }
 
-  /**
-   * Helper to clean JSON responses from various formats
-   */
   protected cleanJsonResponse(text: string): string {
-    let cleaned = text.replace(/```json\n?|\n?```/g, '').trim();
-    const firstBrace = cleaned.indexOf('{');
-    const lastBrace = cleaned.lastIndexOf('}');
-    
-    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-      cleaned = cleaned.substring(firstBrace, lastBrace + 1);
-    }
-    return cleaned;
+    return cleanJsonResponse(text);
   }
 
-  /**
-   * Helper to remove empty fields from objects
-   */
-  protected removeEmptyFields(obj: any): any {
-    if (Array.isArray(obj)) {
-      const cleaned = obj.map(item => this.removeEmptyFields(item))
-        .filter(v => v !== null && v !== undefined && v !== '' && v !== false && 
-                     (typeof v !== 'object' || Object.keys(v).length > 0));
-      return cleaned.length > 0 ? cleaned : undefined;
-    } else if (typeof obj === 'object' && obj !== null) {
-      const newObj: any = {};
-      Object.keys(obj).forEach(key => {
-        const value = this.removeEmptyFields(obj[key]);
-        if (value !== undefined && value !== null && value !== '' && value !== false && 
-            (typeof value !== 'object' || Object.keys(value).length > 0)) {
-          newObj[key] = value;
-        }
-      });
-      return Object.keys(newObj).length > 0 ? newObj : undefined;
-    }
-    return obj;
+  protected removeEmptyFields(obj: unknown): unknown {
+    return removeEmptyFields(obj);
   }
 }

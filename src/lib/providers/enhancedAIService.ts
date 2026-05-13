@@ -313,20 +313,12 @@ export class EnhancedAIService {
       };
     }
 
-    // Try primary provider
-    
-    // Reload settings before each request to pick up any changes from SettingsDialog
-    this.settings = this.loadSettings();
-
     try {
-      console.log(`🔄 Attempting request to ${selectedProfile.name} (Type: ${selectedProfile.providerType}, Model: ${selectedProfile.modelName})`);
-      console.log(`🌐 Base URL: ${selectedProfile.baseUrl}`);
       const response = await adapter.generateContent(prompt, systemPrompt);
       if (response.isSuccessful) {
         return response;
       }
       primaryError = response.error || 'Unknown error';
-      console.error(`❌ Primary provider "${selectedProfile.name}" failed: ${primaryError}`);
     } catch (error) {
       primaryError = error instanceof Error ? error.message : String(error);
       console.error(`❌ Error with primary provider "${selectedProfile.name}":`, error);
@@ -399,8 +391,6 @@ export class EnhancedAIService {
         timestamp: new Date(),
       };
     }
-
-    const startTime = Date.now();
 
     const adapter = this.getAdapter(profile);
     if (!adapter) {

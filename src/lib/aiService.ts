@@ -14,6 +14,4 @@
  * benefit from the new multi-provider capabilities.
  */
 
-// Re-export from compatibility layer for backward compatibility
 export { aiService } from './aiServiceCompat';
-export type { AIProvider, AIProfile, AISettings } from './aiServiceCompat';

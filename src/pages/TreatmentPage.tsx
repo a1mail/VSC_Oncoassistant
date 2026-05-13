@@ -6,35 +6,17 @@ import { aiService } from '@/lib/aiService';
 import { Pill, Loader2, BookOpen, Activity, ArrowRight, FileCode2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { normalizePrescriptions, toPrescriptionText } from '@/lib/prescriptions';
+import { esc, openPrintWindow, buildPatientInfoBlock, buildFooter } from '@/lib/htmlUtils';
+import { extractRawAiDebugState, type RawAiDebugState } from '@/lib/rawAiDebug';
+import type { TreatmentResult, ConsultationData } from '@/lib/types/consultation';
+import { calculateAge } from '@/lib/utils/dateUtils';
 
 import { PromptPreviewDialog } from '@/components/PromptPreviewDialog';
 import { RawAiResponseDialog } from '@/components/RawAiResponseDialog';
 
-type RawAiDebugState = {
-  rawResponse: string;
-  rawResponseFormat?: string;
-  rawProvider?: string;
-  rawResponseTime?: number;
-  wasRepaired?: boolean;
-};
-
-function extractRawAiDebugState(value: any): RawAiDebugState | null {
-  if (!value || typeof value !== 'object' || typeof value.rawResponse !== 'string' || !value.rawResponse.trim()) {
-    return null;
-  }
-
-  return {
-    rawResponse: value.rawResponse,
-    rawResponseFormat: value.rawResponseFormat,
-    rawProvider: value.rawProvider,
-    rawResponseTime: value.rawResponseTime,
-    wasRepaired: value.wasRepaired,
-  };
-}
-
 export function TreatmentPage() {
   const { data, consultationId, activeAiTask, retryContexts, startAiRequest, clearRetryContext } = useConsultation();
-  const [treatmentPlan, setTreatmentPlan] = useState<any>(data.treatment || null);
+  const [treatmentPlan, setTreatmentPlan] = useState<TreatmentResult | null>(data.treatment || null);
   const [rawDebugState, setRawDebugState] = useState<RawAiDebugState | null>(extractRawAiDebugState(data.treatment));
   const [isPromptOpen, setIsPromptOpen] = useState(false);
   const [isRawResponseOpen, setIsRawResponseOpen] = useState(false);
@@ -82,14 +64,14 @@ export function TreatmentPage() {
 
     // Prepare sanitized data for AI
     const patientContext = {
-      age: data.patient?.birth_date ? new Date().getFullYear() - new Date(data.patient.birth_date).getFullYear() : 'Unknown',
+      age: calculateAge(data.patient?.birth_date) ?? 'Unknown',
       gender: data.patient?.gender,
       ecog: data.exam?.ecog,
       menopause_status: data.patient?.menopause_status,
       menopause_basis: data.patient?.menopause_basis,
     };
 
-    let prompt = aiService.prepareTreatmentPrompt(data.diagnosis, patientContext, data.documents || []);
+    let prompt = aiService.prepareTreatmentPrompt(data.diagnosis as unknown as Record<string, unknown>, patientContext as unknown as ConsultationData, data.documents || []);
     if (retryContext?.rawResponse) {
       prompt = aiService.appendRawResponseRetryContext(prompt, 'treatment', retryContext.rawResponse, {
         provider: retryContext.rawProvider,
@@ -111,88 +93,40 @@ export function TreatmentPage() {
   };
 
   const handlePrint = () => {
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(`
-        <html>
-          <head>
-            <title>Лечение - ${data.patient?.full_name || 'Пациент'}</title>
-            <style>
-              body { font-family: sans-serif; padding: 40px; line-height: 1.6; max-width: 800px; margin: 0 auto; }
-              h1 { font-size: 24px; margin-bottom: 20px; text-align: center; border-bottom: 2px solid #333; padding-bottom: 10px; }
-              h2 { font-size: 18px; margin-top: 30px; margin-bottom: 10px; color: #444; border-bottom: 1px solid #eee; }
-              .patient-info { margin-bottom: 30px; background: #f9f9f9; padding: 15px; border-radius: 5px; }
-              .treatment-block { margin-bottom: 20px; }
-              .label { font-weight: bold; color: #555; }
-              .value { margin-top: 5px; white-space: pre-wrap; }
-              .regimen { background: #f0f0f0; padding: 15px; border-radius: 5px; font-family: monospace; }
-              .footer { margin-top: 50px; font-size: 12px; text-align: center; color: #888; border-top: 1px solid #eee; padding-top: 20px; }
-            </style>
-          </head>
-          <body>
-            <h1>Медицинское заключение: План лечения</h1>
-            
-            <div class="patient-info">
-              <div><span class="label">Пациент:</span> ${data.patient?.full_name || 'Не указано'}</div>
-              <div><span class="label">Дата рождения:</span> ${data.patient?.birth_date ? new Date(data.patient.birth_date).toLocaleDateString('ru-RU') : 'Не указано'}</div>
-            </div>
+    const regimenHtml = regimenText
+      ? `<div class="treatment-block"><h2>Рекомендуемая схема (Протокол)</h2><div class="regimen">${esc(regimenText)}</div></div>`
+      : '';
+    const warningsHtml = warnings.length > 0
+      ? `<div class="treatment-block" style="border:1px solid #f59e0b;background:#fffbeb;padding:15px;border-radius:5px;"><h2 style="color:#d97706;margin-top:0;border-bottom:none;">⚠️ Противопоказания и Взаимодействия</h2><ul style="color:#92400e;">${warnings.map((item: string) => `<li>${esc(item)}</li>`).join('')}</ul></div>`
+      : '';
+    const recommendationsHtml = recommendations.length > 0
+      ? `<div class="treatment-block"><h2>Рекомендации пациенту</h2><ul>${recommendations.map((item: string) => `<li>${esc(item)}</li>`).join('')}</ul></div>`
+      : '';
+    const prescriptionsHtml = prescriptions.length > 0
+      ? `<div class="treatment-block"><h2>Назначения</h2><ul>${prescriptions.map((item) => `<li><strong>${esc(item.name)}</strong>: ${esc(item.details)}</li>`).join('')}</ul></div>`
+      : '';
 
-            <div class="treatment-block">
-              <h2>Стратегия лечения</h2>
-              <div class="value">${treatmentStrategyText}</div>
-              <div style="font-size: 0.9em; color: #666; margin-top: 5px;">Источник: ${crSourceText}</div>
-            </div>
-
-            <div class="treatment-block">
-              <h2>Основное лечение</h2>
-              <div class="value">${primaryTreatmentText}</div>
-            </div>
-
-            ${regimenText ? `
-            <div class="treatment-block">
-              <h2>Рекомендуемая схема (Протокол)</h2>
-              <div class="regimen">${regimenText}</div>
-            </div>
-            ` : ''}
-
-            ${warnings.length > 0 ? `
-            <div class="treatment-block" style="border: 1px solid #f59e0b; background: #fffbeb; padding: 15px; border-radius: 5px;">
-              <h2 style="color: #d97706; margin-top: 0; border-bottom: none;">⚠️ Противопоказания и Взаимодействия</h2>
-              <ul style="color: #92400e;">
-                ${warnings.map((item: string) => `<li>${item}</li>`).join('')}
-              </ul>
-            </div>
-            ` : ''}
-
-            ${recommendations.length > 0 ? `
-            <div class="treatment-block">
-              <h2>Рекомендации пациенту</h2>
-              <ul>
-                ${recommendations.map((item: string) => `<li>${item}</li>`).join('')}
-              </ul>
-            </div>
-            ` : ''}
-
-            ${prescriptions.length > 0 ? `
-            <div class="treatment-block">
-              <h2>Назначения</h2>
-              <ul>
-                ${prescriptions.map((item) => `<li><strong>${item.name}</strong>: ${item.details}</li>`).join('')}
-              </ul>
-            </div>
-            ` : ''}
-
-            <div class="footer">
-              Сформировано: ${new Date().toLocaleDateString('ru-RU')}
-            </div>
-            <script>
-              window.onload = function() { window.print(); window.close(); }
-            </script>
-          </body>
-        </html>
-      `);
-      printWindow.document.close();
-    }
+    openPrintWindow({
+      title: `Лечение - ${data.patient?.full_name || 'Пациент'}`,
+      extraCss: '.treatment-block { margin-bottom: 20px; } .regimen { background: #f0f0f0; padding: 15px; border-radius: 5px; font-family: monospace; }',
+      bodyHtml: `
+        <h1>Медицинское заключение: План лечения</h1>
+        ${buildPatientInfoBlock(data.patient)}
+        <div class="treatment-block">
+          <h2>Стратегия лечения</h2>
+          <div class="value">${esc(treatmentStrategyText)}</div>
+          <div style="font-size:0.9em;color:#666;margin-top:5px;">Источник: ${esc(crSourceText)}</div>
+        </div>
+        <div class="treatment-block">
+          <h2>Основное лечение</h2>
+          <div class="value">${esc(primaryTreatmentText)}</div>
+        </div>
+        ${regimenHtml}
+        ${warningsHtml}
+        ${recommendationsHtml}
+        ${prescriptionsHtml}
+        ${buildFooter()}`,
+    });
   };
 
   return (

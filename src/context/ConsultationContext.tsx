@@ -1,24 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
 import { aiService } from '@/lib/aiService';
+import type { ConsultationData, ConsultationDocument, AiDebugMetadata } from '@/lib/types/consultation';
 
-type Document = {
-  id: string;
-  name: string;
-  type: 'text' | 'image';
-  content: string; // text content or base64
-  includeInAnalysis: boolean;
-};
-
-type ConsultationData = {
-  patient?: any;
-  anamnesis?: any;
-  exam?: any;
-  diagnostics?: any;
-  diagnosis?: any;
-  treatment?: any;
-  documents?: Document[];
-};
+export type { ConsultationData, ConsultationDocument };
 
 type SaveResult = {
   success: boolean;
@@ -53,7 +38,7 @@ type AiRequestTask = {
 type ConsultationContextType = {
   data: ConsultationData;
   consultationId: string;
-  updateData: (section: keyof ConsultationData, value: any) => void;
+  updateData: (section: keyof ConsultationData, value: ConsultationData[keyof ConsultationData]) => void;
   resetData: () => void;
   saveToServer: (silent?: boolean) => Promise<SaveResult>;
   triggerReload: () => void;
@@ -61,7 +46,7 @@ type ConsultationContextType = {
   lastSaved: Date | null;
   activeAiTask: AiRequestTask | null;
   retryContexts: Partial<Record<AiRequestSection, AiRetryContext>>;
-  startAiRequest: (section: AiRequestSection, prompt: string, documents?: Document[]) => Promise<void>;
+  startAiRequest: (section: AiRequestSection, prompt: string, documents?: ConsultationDocument[]) => Promise<void>;
   minimizeAiTask: () => void;
   restoreAiTask: () => void;
   dismissAiTask: () => void;
@@ -92,7 +77,7 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
   const [activeAiTask, setActiveAiTask] = useState<AiRequestTask | null>(null);
   const [retryContexts, setRetryContexts] = useState<Partial<Record<AiRequestSection, AiRetryContext>>>({});
 
-  const updateData = useCallback((section: keyof ConsultationData, value: any) => {
+  const updateData = useCallback((section: keyof ConsultationData, value: ConsultationData[keyof ConsultationData]) => {
     setData((prev) => {
       if (prev[section] === value) return prev;
       setSaveStatus('idle'); // Reset status when data changes
@@ -166,7 +151,7 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
     }
 
     try {
-      await api.saveConsultation(data.patient.id, data);
+      await api.saveConsultation(data.patient.id, data as unknown as Record<string, unknown>);
       if (!silent) console.log("Данные успешно сохранены в базу данных");
       setSaveStatus('saved');
       setLastSaved(new Date());
@@ -242,7 +227,7 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
   }, []);
 
   const startAiRequest = useCallback(
-    async (section: AiRequestSection, prompt: string, documents: Document[] = []) => {
+    async (section: AiRequestSection, prompt: string, documents: ConsultationDocument[] = []) => {
       if (activeAiTask?.status === 'running') {
         throw new Error('Уже выполняется другой AI-запрос. Дождитесь его завершения.');
       }
@@ -278,7 +263,9 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
             isMinimized: false,
           };
         });
-      } catch (error: any) {
+      } catch (error: unknown) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        const meta = err as Partial<AiDebugMetadata>;
         setActiveAiTask((prev) => {
           if (!prev || prev.id !== taskId) {
             return prev;
@@ -287,12 +274,12 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
           return {
             ...prev,
             status: 'error',
-            errorMessage: error?.message || 'Ошибка при обращении к ИИ',
-            rawResponse: error?.rawResponse,
-            rawProvider: error?.rawProvider,
-            rawResponseFormat: error?.rawResponseFormat,
-            rawResponseTime: error?.rawResponseTime,
-            wasRepaired: error?.wasRepaired,
+            errorMessage: err.message || 'Ошибка при обращении к ИИ',
+            rawResponse: meta.rawResponse,
+            rawProvider: meta.rawProvider,
+            rawResponseFormat: meta.rawResponseFormat,
+            rawResponseTime: meta.rawResponseTime,
+            wasRepaired: meta.wasRepaired,
             isMinimized: false,
           };
         });

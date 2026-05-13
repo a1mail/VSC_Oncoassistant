@@ -133,19 +133,4 @@ export interface EnhancedAISettings {
   healthCheckInterval: number;  // minutes
 }
 
-// Legacy profile for backward compatibility
-export interface AIProfile {
-  id: string;
-  name: string;
-  provider: 'gemini' | 'openai_compatible';
-  apiKey?: string;
-  baseUrl?: string;
-  modelName?: string;
-}
 
-// Legacy settings for backward compatibility
-export interface AISettings {
-  profiles: AIProfile[];
-  activeProfileId: string;
-  enableFallback: boolean;
-}

@@ -40,10 +40,10 @@ export function createToken(userId: string = 'user'): string {
  */
 export function verifyToken(token: string): { valid: boolean; userId?: string; error?: string } {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const decoded = jwt.verify(token, JWT_SECRET) as { userId?: string };
     return { valid: true, userId: decoded.userId };
-  } catch (error: any) {
-    return { valid: false, error: error.message };
+  } catch (error: unknown) {
+    return { valid: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -67,8 +67,8 @@ export async function authenticate(
 
     const token = createToken();
     return { success: true, token };
-  } catch (error: any) {
-    return { success: false, error: error.message };
+  } catch (error: unknown) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 

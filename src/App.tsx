@@ -28,6 +28,7 @@ export default function App() {
             <Route path="diagnosis" element={<DiagnosisPage />} />
             <Route path="treatment" element={<TreatmentPage />} />
             <Route path="prescriptions" element={<PrescriptionsPage />} />
+            <Route path="*" element={<Navigate to="patient" replace />} />
           </Route>
         </Routes>
       </HashRouter>

@@ -1,8 +1,10 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { useConsultation } from '@/context/ConsultationContext';
 import { Copy, Printer, X } from 'lucide-react';
 import { normalizePrescriptions, toPrescriptionText } from '@/lib/prescriptions';
+import { esc, openPrintWindow } from '@/lib/htmlUtils';
+import type { PatientData, ExamData, TreatmentResult } from '@/lib/types/consultation';
 
 interface ReportDialogProps {
   isOpen: boolean;
@@ -107,22 +109,23 @@ const formatPrimitive = (key: string, value: unknown) => {
   return safe(value);
 };
 
-const shouldSkipField = (key: string, value: unknown, source: any) => {
+const shouldSkipField = (key: string, value: unknown, source: Record<string, unknown>) => {
   if (technicalKeys.has(key) || isEmpty(value)) return true;
-  if (typeof value === 'boolean' && value === false) return true;
+  if (typeof value === 'boolean' && !value) return true;
   if (key === 'menopause_mode') return true;
   if (key === 'menopause_status_manual' && String(value) === 'unknown') return true;
   if (key === 'menopause_status' && ['unknown', 'not_applicable'].includes(String(value))) return true;
   if (key === 'menopause_basis' && toText(value).toLowerCase().includes('неприменимо')) return true;
-  if (source?.gender === 'male' && key.startsWith('menopause')) return true;
+  if (source.gender === 'male' && key.startsWith('menopause')) return true;
   return false;
 };
 
-const appendGenericSection = (parts: string[], title: string, source: any, labels: Record<string, string> = {}) => {
+const appendGenericSection = (parts: string[], title: string, source: unknown, labels: Record<string, string> = {}) => {
   if (!source || typeof source !== 'object') return;
+  const record = source as Record<string, unknown>;
   const lines: string[] = [];
-  Object.entries(source).forEach(([key, value]) => {
-    if (shouldSkipField(key, value, source)) return;
+  Object.entries(record).forEach(([key, value]) => {
+    if (shouldSkipField(key, value, record)) return;
     const label = labels[key] || humanizeKey(key);
     if (Array.isArray(value)) {
       const values = value
@@ -142,7 +145,7 @@ const appendGenericSection = (parts: string[], title: string, source: any, label
   parts.push(title, ...lines, '');
 };
 
-const appendPatientSection = (parts: string[], patient: any) => {
+const appendPatientSection = (parts: string[], patient: PatientData | undefined) => {
   if (!patient) return;
   const lines: string[] = [];
   const pushLine = (label: string, value: string) => {
@@ -170,7 +173,7 @@ const appendPatientSection = (parts: string[], patient: any) => {
   parts.push('1. Паспортная часть', ...lines, '');
 };
 
-const appendExamSection = (parts: string[], exam: any) => {
+const appendExamSection = (parts: string[], exam: ExamData | undefined) => {
   if (!exam || typeof exam !== 'object') return;
   const lines: string[] = [];
   const pushLine = (label: string, value: unknown) => {
@@ -216,7 +219,7 @@ const appendExamSection = (parts: string[], exam: any) => {
   parts.push('3. Объективный осмотр', ...lines, '');
 };
 
-const appendTreatmentSection = (parts: string[], treatment: any) => {
+const appendTreatmentSection = (parts: string[], treatment: TreatmentResult | undefined) => {
   if (!treatment || typeof treatment !== 'object') return;
   const lines: string[] = [];
   const pushLine = (label: string, value: unknown) => {
@@ -256,7 +259,7 @@ const appendTreatmentSection = (parts: string[], treatment: any) => {
   parts.push('6. План лечения', ...lines, '');
 };
 
-const appendPrescriptionsSection = (parts: string[], treatment: any) => {
+const appendPrescriptionsSection = (parts: string[], treatment: TreatmentResult | undefined) => {
   const prescriptions = normalizePrescriptions(treatment?.prescriptions);
   if (prescriptions.length === 0) return;
   parts.push('7. Лист назначений');
@@ -270,7 +273,9 @@ const appendPrescriptionsSection = (parts: string[], treatment: any) => {
 export function ReportDialog({ isOpen, onClose }: ReportDialogProps) {
   const { data } = useConsultation();
 
-  const generateReport = () => {
+  const reportText = useMemo(() => {
+    if (!isOpen) return '';
+
     const parts = [
       'МЕДИЦИНСКИЙ ОТЧЕТ ПО КОНСУЛЬТАЦИИ',
       `Дата формирования: ${new Date().toLocaleString('ru-RU')}`,
@@ -287,7 +292,7 @@ export function ReportDialog({ isOpen, onClose }: ReportDialogProps) {
 
     if (data.documents && Array.isArray(data.documents) && data.documents.length > 0) {
       parts.push('8. Вложенные документы');
-      data.documents.forEach((doc: any, index: number) => {
+      data.documents.forEach((doc: { name?: string; type?: string; includeInAnalysis?: boolean; content?: string }, index: number) => {
         const meta = `Документ ${index + 1}: ${safe(doc.name)} | Тип: ${safe(doc.type)} | Для ИИ: ${yesNo(!!doc.includeInAnalysis)}`;
         parts.push(meta);
         if (doc.type === 'text' && typeof doc.content === 'string' && doc.content.trim()) {
@@ -298,49 +303,18 @@ export function ReportDialog({ isOpen, onClose }: ReportDialogProps) {
     }
 
     return parts.join('\n');
-  };
-
-  const reportText = generateReport();
+  }, [isOpen, data]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(reportText);
-    console.log('Текст скопирован в буфер обмена');
   };
 
   const handlePrint = () => {
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(`
-        <html>
-          <head>
-            <title>Медицинская карта - ${data.patient?.full_name || 'Пациент'}</title>
-            <style>
-              body { font-family: sans-serif; padding: 20px; line-height: 1.5; }
-              h1 { font-size: 18px; margin-bottom: 20px; }
-              pre { white-space: pre-wrap; font-family: monospace; font-size: 14px; }
-            </style>
-          </head>
-          <body>
-            <h1>Медицинская карта</h1>
-            <pre>${reportText}</pre>
-            <script>
-              window.onload = function() { window.print(); window.close(); }
-            </script>
-          </body>
-        </html>
-      `);
-      printWindow.document.close();
-    } else {
-        // Fallback if popup blocked
-        const originalContent = document.body.innerHTML;
-        const printContent = document.createElement('div');
-        printContent.innerHTML = `<pre style="white-space: pre-wrap; font-family: monospace; padding: 20px;">${reportText}</pre>`;
-        document.body.innerHTML = '';
-        document.body.appendChild(printContent);
-        window.print();
-        document.body.innerHTML = originalContent;
-        window.location.reload(); // Reload to restore state properly
-    }
+    openPrintWindow({
+      title: `Медицинская карта - ${data.patient?.full_name || 'Пациент'}`,
+      extraCss: 'pre { white-space: pre-wrap; font-family: monospace; font-size: 14px; }',
+      bodyHtml: `<h1>Медицинская карта</h1><pre>${esc(reportText)}</pre>`,
+    });
   };
 
   if (!isOpen) return null;

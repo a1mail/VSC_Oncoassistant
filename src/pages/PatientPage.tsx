@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { useConsultation } from '@/context/ConsultationContext';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
+import { calculateAge } from '@/lib/utils/dateUtils';
 
 const patientSchema = z.object({
   full_name: z.string().min(2, "ФИО должно быть длиннее 2 символов"),
@@ -26,19 +27,6 @@ const patientSchema = z.object({
 });
 
 type PatientFormValues = z.infer<typeof patientSchema>;
-
-const calculateAge = (birthDate?: string) => {
-  if (!birthDate) return null;
-  const birth = new Date(birthDate);
-  if (Number.isNaN(birth.getTime())) return null;
-  const now = new Date();
-  let age = now.getFullYear() - birth.getFullYear();
-  const monthDiff = now.getMonth() - birth.getMonth();
-  if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birth.getDate())) {
-    age--;
-  }
-  return age;
-};
 
 const calculateMenopauseStatus = (values: Partial<PatientFormValues>) => {
   if (values.gender !== 'female') {
@@ -145,7 +133,7 @@ const emptyPatient: PatientFormValues = {
   menopause_basis: '',
 };
 
-const normalizePatientValues = (source?: any): PatientFormValues => ({
+const normalizePatientValues = (source?: Partial<PatientFormValues>): PatientFormValues => ({
   ...emptyPatient,
   ...(source || {}),
   bilateral_oophorectomy: !!source?.bilateral_oophorectomy,

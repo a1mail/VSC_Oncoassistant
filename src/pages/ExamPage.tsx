@@ -241,7 +241,7 @@ export function ExamPage() {
         </Card>
 
         {SYSTEMS.map((system) => {
-          const selectedFindings = watch(`${system.id}_findings`) || [];
+          const selectedFindings = (watch(`${system.id}_findings`) as string[] | undefined) || [];
           return (
             <Card key={system.id}>
               <CardHeader className="pb-3">

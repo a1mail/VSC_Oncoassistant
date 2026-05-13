@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { FileText, Printer, AlertCircle } from 'lucide-react';
 import { normalizePrescriptions, type NormalizedPrescription } from '@/lib/prescriptions';
+import { esc, openPrintWindow, buildPatientInfoBlock } from '@/lib/htmlUtils';
 
 export function PrescriptionsPage() {
   const { data } = useConsultation();
@@ -11,65 +12,29 @@ export function PrescriptionsPage() {
   const prescriptions = normalizePrescriptions(treatment?.prescriptions);
 
   const handlePrint = () => {
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(`
-        <html>
-          <head>
-            <title>Лист назначений - ${data.patient?.full_name || 'Пациент'}</title>
-            <style>
-              body { font-family: sans-serif; padding: 40px; line-height: 1.6; max-width: 800px; margin: 0 auto; }
-              h1 { font-size: 24px; margin-bottom: 20px; text-align: center; border-bottom: 2px solid #333; padding-bottom: 10px; }
-              .patient-info { margin-bottom: 30px; background: #f9f9f9; padding: 15px; border-radius: 5px; }
-              table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-              th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-              th { background-color: #f2f2f2; }
-              .type-badge { font-size: 0.8em; padding: 2px 6px; border-radius: 4px; background: #e0e7ff; color: #3730a3; }
-              .footer { margin-top: 50px; font-size: 12px; text-align: center; color: #888; border-top: 1px solid #eee; padding-top: 20px; }
-            </style>
-          </head>
-          <body>
-            <h1>Лист назначений</h1>
-            
-            <div class="patient-info">
-              <div><strong>Пациент:</strong> ${data.patient?.full_name || 'Не указано'}</div>
-              <div><strong>Дата рождения:</strong> ${data.patient?.birth_date ? new Date(data.patient.birth_date).toLocaleDateString('ru-RU') : 'Не указано'}</div>
-              <div><strong>Диагноз:</strong> ${data.diagnosis?.working_diagnosis || 'Не указан'}</div>
-            </div>
+    const diagnosisLine = `<div><strong>Диагноз:</strong> ${esc(data.diagnosis?.working_diagnosis || 'Не указан')}</div>`;
+    const tableHtml = prescriptions.length > 0
+      ? `<table><thead><tr><th>Тип</th><th>Наименование</th><th>Подробности (Доза, режим, путь введения)</th></tr></thead><tbody>${prescriptions.map((p: NormalizedPrescription) => `<tr><td><span class="type-badge">${esc(p.type)}</span></td><td><strong>${esc(p.name)}</strong></td><td>${esc(p.details)}</td></tr>`).join('')}</tbody></table>`
+      : '<p>Нет сформированных назначений. Перейдите на вкладку &quot;Лечение&quot; и сформируйте план.</p>';
 
-            ${prescriptions.length > 0 ? `
-              <table>
-                <thead>
-                  <tr>
-                    <th>Тип</th>
-                    <th>Наименование</th>
-                    <th>Подробности (Доза, режим, путь введения)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${prescriptions.map((p: NormalizedPrescription) => `
-                    <tr>
-                      <td><span class="type-badge">${p.type}</span></td>
-                      <td><strong>${p.name}</strong></td>
-                      <td>${p.details}</td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            ` : '<p>Нет сформированных назначений. Перейдите на вкладку "Лечение" и сформируйте план.</p>'}
-
-            <div class="footer">
-              Врач: ________________________ / ________________________ <br><br>
-              Дата: ${new Date().toLocaleDateString('ru-RU')}
-            </div>
-            <script>
-              window.onload = function() { window.print(); window.close(); }
-            </script>
-          </body>
-        </html>
-      `);
-      printWindow.document.close();
-    }
+    openPrintWindow({
+      title: `Лист назначений - ${data.patient?.full_name || 'Пациент'}`,
+      extraCss: `
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .type-badge { font-size: 0.8em; padding: 2px 6px; border-radius: 4px; background: #e0e7ff; color: #3730a3; }
+      `,
+      bodyHtml: `
+        <h1>Лист назначений</h1>
+        ${buildPatientInfoBlock(data.patient)}
+        ${diagnosisLine}
+        ${tableHtml}
+        <div class="footer">
+          Врач: ________________________ / ________________________ <br><br>
+          Дата: ${esc(new Date().toLocaleDateString('ru-RU'))}
+        </div>`,
+    });
   };
 
   if (!treatment) {
