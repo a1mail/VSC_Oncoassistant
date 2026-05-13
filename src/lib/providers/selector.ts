@@ -8,6 +8,38 @@ import { EnhancedAIProfile, RequestContext } from './types';
 export type SelectionStrategy = 'FastestFirst' | 'CheapestFirst' | 'MostReliable' | 'RoundRobin';
 
 export class ProviderSelector {
+  private static isOpenRouterProfile(profile: EnhancedAIProfile): boolean {
+    return profile.providerType === 'openrouter' || profile.baseUrl.toLowerCase().includes('openrouter.ai');
+  }
+
+  private static isStructuredJsonFragile(profile: EnhancedAIProfile, context: RequestContext): boolean {
+    if (!context.requiresJSON) return false;
+
+    if (!this.isOpenRouterProfile(profile)) {
+      return false;
+    }
+
+    const modelInfo = profile.openRouterModelInfo;
+    if (modelInfo) {
+      return (
+        modelInfo.preferredStructuredFormat !== 'json' ||
+        !modelInfo.supportsResponseFormat ||
+        modelInfo.isReasoningModel ||
+        modelInfo.isFreeTier
+      );
+    }
+
+    const model = profile.modelName.toLowerCase();
+    return (
+      model.includes(':free') ||
+        model.includes('preview') ||
+        model.includes('tencent/') ||
+        model.includes('minimax/') ||
+        model.includes('glm-') ||
+        model.includes('qwen3-next')
+    );
+  }
+
   /**
    * Select the best provider based on the configured strategy
    */
@@ -152,11 +184,33 @@ export class ProviderSelector {
     score += profile.priority;
 
     // Context-specific adjustments
+    if (context.requiresJSON) {
+      score += profile.capabilities.supportsJSON ? 12 : -20;
+      if (this.isStructuredJsonFragile(profile, context)) {
+        score -= 15;
+      }
+
+      if (profile.openRouterModelInfo?.supportsResponseFormat) {
+        score += 4;
+      }
+    }
+
     if (context.type === 'quick_check' && avgTime < 2000) {
       score += 10;  // Bonus for fast responses on quick checks
     }
     if (context.type === 'complex_analysis' && successRate > 0.95) {
       score += 10;  // Bonus for reliable providers on complex tasks
+    }
+    if (context.priority === 'reliability') {
+      score += successRate * 10;
+    }
+
+    if (profile.openRouterModelInfo?.isReasoningModel && context.type === 'complex_analysis') {
+      score += 4;
+    }
+
+    if (profile.openRouterModelInfo?.isFreeTier && context.priority === 'speed') {
+      score -= 4;
     }
 
     return Math.max(0, Math.min(100, score));

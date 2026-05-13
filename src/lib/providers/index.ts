@@ -9,6 +9,7 @@ export * from './factory';
 export * from './selector';
 export * from './enhancedAIService';
 export * from './profileService';
+export * from './openrouterModelRegistry';
 
 // Re-export adapters
 export { GeminiAdapter } from './adapters/gemini';

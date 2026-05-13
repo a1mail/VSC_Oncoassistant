@@ -4,9 +4,10 @@
  */
 
 import React, { useState } from 'react';
-import { Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { Eye, EyeOff, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import { ProviderFactory, ProviderType } from '@/lib/providers';
 import { SavedProviderProfile } from '@/lib/providers/profileService';
+import { EnhancedAIProfile } from '@/lib/providers/types';
 
 interface ProviderFormProps {
   profile: Partial<SavedProviderProfile> | null;
@@ -69,6 +70,8 @@ export function ProviderForm({ profile, onSave, onCancel }: ProviderFormProps) {
 
   const [showApiKey, setShowApiKey] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{isHealthy: boolean; error?: string} | null>(null);
 
   const providerType = formData.type as ProviderType;
   const providerInfo = PROVIDER_INFO[providerType];
@@ -118,6 +121,55 @@ export function ProviderForm({ profile, onSave, onCancel }: ProviderFormProps) {
     return template.baseUrl || 'https://api.example.com/v1';
   };
 
+  const handleTestConnection = async () => {
+    if (!validateForm()) return;
+    
+    setIsTesting(true);
+    setTestResult(null);
+    
+    try {
+      const template = ProviderFactory.getProviderTemplate(providerType);
+      const tempProfile: EnhancedAIProfile = {
+        id: 'test-temp-id',
+        name: formData.name?.trim() || 'Тестовый профиль',
+        providerType,
+        apiKey: (formData.apiKey || '').trim(),
+        baseUrl: (formData.baseUrl || '').trim() || String(template.baseUrl || ''),
+        modelName: (formData.modelName || '').trim() || String(template.modelName || ''),
+        metrics: {
+          successCount: 0,
+          failureCount: 0,
+          isHealthy: true,
+        },
+        capabilities: template.capabilities || {
+          supportsImages: false,
+          supportsJSON: false,
+          supportsSystemPrompt: true,
+          supportsVision: false,
+          maxTokens: 4000,
+          contextWindow: 128000,
+        },
+        isActive: true,
+        priority: template.priority || 5,
+      };
+      
+      const adapter = ProviderFactory.createAdapter(tempProfile);
+      const result = await adapter.testConnection();
+      
+      setTestResult({
+        isHealthy: result.isHealthy,
+        error: result.error
+      });
+    } catch (error: any) {
+      setTestResult({
+        isHealthy: false,
+        error: error.message || 'Ошибка при тестировании соединения'
+      });
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
       {/* Alert: API Key Security */}
@@ -146,6 +198,7 @@ export function ProviderForm({ profile, onSave, onCancel }: ProviderFormProps) {
           value={formData.name || ''}
           onChange={(e) => {
             setFormData({ ...formData, name: e.target.value });
+            setTestResult(null);
             if (errors.name) setErrors({ ...errors, name: '' });
           }}
           placeholder="e.g., My ChatGPT Pro, Local Llama Model"
@@ -165,7 +218,10 @@ export function ProviderForm({ profile, onSave, onCancel }: ProviderFormProps) {
         </label>
         <select
           value={formData.type || ''}
-          onChange={(e) => setFormData({ ...formData, type: e.target.value as ProviderType })}
+          onChange={(e) => {
+            setFormData({ ...formData, type: e.target.value as ProviderType });
+            setTestResult(null);
+          }}
           className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white"
           title="Select AI provider type"
           aria-label="AI Provider"
@@ -191,6 +247,7 @@ export function ProviderForm({ profile, onSave, onCancel }: ProviderFormProps) {
           value={formData.modelName || ''}
           onChange={(e) => {
             setFormData({ ...formData, modelName: e.target.value });
+            setTestResult(null);
             if (errors.modelName) setErrors({ ...errors, modelName: '' });
           }}
           placeholder={getModelPlaceholder()}
@@ -210,7 +267,7 @@ export function ProviderForm({ profile, onSave, onCancel }: ProviderFormProps) {
         </p>
       </div>
 
-      {/* Base URL - Only for non-local and non-gemini variants */}
+      {/* Base URL - Only for non-local variants */}
       {providerType !== 'local' && (
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -221,6 +278,7 @@ export function ProviderForm({ profile, onSave, onCancel }: ProviderFormProps) {
             value={formData.baseUrl || ''}
             onChange={(e) => {
               setFormData({ ...formData, baseUrl: e.target.value });
+              setTestResult(null);
               if (errors.baseUrl) setErrors({ ...errors, baseUrl: '' });
             }}
             placeholder={getUrlPlaceholder()}
@@ -267,6 +325,7 @@ export function ProviderForm({ profile, onSave, onCancel }: ProviderFormProps) {
               value={formData.apiKey || ''}
               onChange={(e) => {
                 setFormData({ ...formData, apiKey: e.target.value });
+                setTestResult(null);
                 if (errors.apiKey) setErrors({ ...errors, apiKey: '' });
               }}
               placeholder="sk-... or secret-... or your-api-key"
@@ -302,7 +361,10 @@ export function ProviderForm({ profile, onSave, onCancel }: ProviderFormProps) {
           type="checkbox"
           id="isActive"
           checked={formData.isActive ?? true}
-          onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
+          onChange={(e) => {
+            setFormData({ ...formData, isActive: e.target.checked });
+            setTestResult(null);
+          }}
           className="w-4 h-4 rounded border-slate-300 text-blue-600"
         />
         <label htmlFor="isActive" className="text-sm font-medium text-slate-700 cursor-pointer">
@@ -311,20 +373,46 @@ export function ProviderForm({ profile, onSave, onCancel }: ProviderFormProps) {
       </div>
 
       {/* Form Actions */}
-      <div className="flex gap-3 pt-4 border-t">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="flex-1 px-4 py-2 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 font-medium transition-colors"
-        >
-          Cancel
-        </button>
-        <button
-          type="submit"
-          className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors"
-        >
-          Save Profile
-        </button>
+      <div className="pt-4 border-t space-y-4">
+        {/* Test Connection Button */}
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-3 bg-slate-50 border border-slate-200 rounded-lg">
+          <div className="flex-1">
+            {testResult && (
+              <div className={`flex items-center gap-2 text-sm ${testResult.isHealthy ? 'text-green-600 font-medium' : 'text-red-600'}`}>
+                {testResult.isHealthy ? (
+                  <><CheckCircle className="w-4 h-4" /> Соединение установлено (OK)</>
+                ) : (
+                  <><AlertCircle className="w-4 h-4" /> Ошибка: {testResult.error}</>
+                )}
+              </div>
+            )}
+            {!testResult && <span className="text-sm text-slate-500">Проверьте настройки перед сохранением</span>}
+          </div>
+          <button
+            type="button"
+            onClick={handleTestConnection}
+            disabled={isTesting}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-200 text-slate-800 rounded-lg hover:bg-slate-300 font-medium transition-colors disabled:opacity-50 whitespace-nowrap"
+          >
+            {isTesting ? <><Loader2 className="w-4 h-4 animate-spin" /> Тестирование...</> : 'Тест соединения'}
+          </button>
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex-1 px-4 py-2 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 font-medium transition-colors"
+          >
+            Отмена
+          </button>
+          <button
+            type="submit"
+            className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors"
+          >
+            Сохранить профиль
+          </button>
+        </div>
       </div>
     </form>
   );

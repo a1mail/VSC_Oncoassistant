@@ -3,34 +3,78 @@ import { useConsultation } from '@/context/ConsultationContext';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { aiService } from '@/lib/aiService';
-import { Pill, Loader2, BookOpen, Activity, ArrowRight } from 'lucide-react';
+import { Pill, Loader2, BookOpen, Activity, ArrowRight, FileCode2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { normalizePrescriptions, toPrescriptionText } from '@/lib/prescriptions';
 
 import { PromptPreviewDialog } from '@/components/PromptPreviewDialog';
+import { RawAiResponseDialog } from '@/components/RawAiResponseDialog';
+
+type RawAiDebugState = {
+  rawResponse: string;
+  rawResponseFormat?: string;
+  rawProvider?: string;
+  rawResponseTime?: number;
+  wasRepaired?: boolean;
+};
+
+function extractRawAiDebugState(value: any): RawAiDebugState | null {
+  if (!value || typeof value !== 'object' || typeof value.rawResponse !== 'string' || !value.rawResponse.trim()) {
+    return null;
+  }
+
+  return {
+    rawResponse: value.rawResponse,
+    rawResponseFormat: value.rawResponseFormat,
+    rawProvider: value.rawProvider,
+    rawResponseTime: value.rawResponseTime,
+    wasRepaired: value.wasRepaired,
+  };
+}
 
 export function TreatmentPage() {
-  const { data, updateData, consultationId } = useConsultation();
-  const [isLoading, setIsLoading] = useState(false);
+  const { data, consultationId, activeAiTask, retryContexts, startAiRequest, clearRetryContext } = useConsultation();
   const [treatmentPlan, setTreatmentPlan] = useState<any>(data.treatment || null);
+  const [rawDebugState, setRawDebugState] = useState<RawAiDebugState | null>(extractRawAiDebugState(data.treatment));
   const [isPromptOpen, setIsPromptOpen] = useState(false);
+  const [isRawResponseOpen, setIsRawResponseOpen] = useState(false);
   const [promptText, setPromptText] = useState('');
   const navigate = useNavigate();
+  const hasRunningAiTask = activeAiTask?.status === 'running';
+  const isRunningCurrentTask = activeAiTask?.section === 'treatment' && activeAiTask.status === 'running';
+  const retryContext = retryContexts.treatment;
+  const treatmentStrategyText = toPrescriptionText(treatmentPlan?.treatment_strategy);
+  const primaryTreatmentText = toPrescriptionText(treatmentPlan?.primary_treatment);
+  const regimenText = toPrescriptionText(treatmentPlan?.regimen);
+  const crSourceText = toPrescriptionText(treatmentPlan?.cr_source);
   const warnings = Array.isArray(treatmentPlan?.warnings)
-    ? treatmentPlan.warnings
+    ? treatmentPlan.warnings.map(toPrescriptionText).filter(Boolean)
     : typeof treatmentPlan?.warnings === 'string' && treatmentPlan.warnings.trim()
       ? [treatmentPlan.warnings]
       : [];
   const recommendations = Array.isArray(treatmentPlan?.recommendations)
-    ? treatmentPlan.recommendations
+    ? treatmentPlan.recommendations.map(toPrescriptionText).filter(Boolean)
     : typeof treatmentPlan?.recommendations === 'string' && treatmentPlan.recommendations.trim()
       ? [treatmentPlan.recommendations]
       : [];
+  const prescriptions = normalizePrescriptions(treatmentPlan?.prescriptions);
 
   React.useEffect(() => {
     setTreatmentPlan(data.treatment || null);
+    setRawDebugState(extractRawAiDebugState(data.treatment));
   }, [consultationId, data.treatment]);
 
+  React.useEffect(() => {
+    if (activeAiTask?.section === 'treatment' && activeAiTask.status !== 'running') {
+      setIsPromptOpen(false);
+    }
+  }, [activeAiTask]);
+
   const handleGeneratePlan = async () => {
+    if (hasRunningAiTask) {
+      return;
+    }
+
     if (!data.diagnosis) {
       console.warn("Сначала необходимо сформировать диагноз!");
       return;
@@ -45,28 +89,25 @@ export function TreatmentPage() {
       menopause_basis: data.patient?.menopause_basis,
     };
 
-    const prompt = aiService.prepareTreatmentPrompt(data.diagnosis, patientContext, data.documents || []);
-    setPromptText(prompt);
+    let prompt = aiService.prepareTreatmentPrompt(data.diagnosis, patientContext, data.documents || []);
+    if (retryContext?.rawResponse) {
+      prompt = aiService.appendRawResponseRetryContext(prompt, 'treatment', retryContext.rawResponse, {
+        provider: retryContext.rawProvider,
+        previousError: retryContext.sourceErrorMessage,
+      });
+    }
+    setPromptText(aiService.getFinalExecutionPrompt(prompt));
     setIsPromptOpen(true);
   };
 
-  const handleConfirmGeneratePlan = async (finalPrompt: string) => {
-    setIsLoading(true);
-    try {
-      const result = await aiService.executeRawPrompt(finalPrompt, data.documents || []);
-      setTreatmentPlan(result);
-      updateData('treatment', result);
-      setIsPromptOpen(false);
-    } catch (error) {
+  const handleConfirmGeneratePlan = (finalPrompt: string) => {
+    void startAiRequest('treatment', finalPrompt, data.documents || []).catch((error) => {
       console.error(error);
-      if (error instanceof Error) {
-        alert(`Ошибка ИИ: ${error.message}`);
-      } else {
-        alert("Ошибка при генерации плана лечения");
+      const extractedRawDebugState = extractRawAiDebugState(error);
+      if (extractedRawDebugState) {
+        setRawDebugState(extractedRawDebugState);
       }
-    } finally {
-      setIsLoading(false);
-    }
+    });
   };
 
   const handlePrint = () => {
@@ -98,19 +139,19 @@ export function TreatmentPage() {
 
             <div class="treatment-block">
               <h2>Стратегия лечения</h2>
-              <div class="value">${treatmentPlan.treatment_strategy}</div>
-              <div style="font-size: 0.9em; color: #666; margin-top: 5px;">Источник: ${treatmentPlan.cr_source}</div>
+              <div class="value">${treatmentStrategyText}</div>
+              <div style="font-size: 0.9em; color: #666; margin-top: 5px;">Источник: ${crSourceText}</div>
             </div>
 
             <div class="treatment-block">
               <h2>Основное лечение</h2>
-              <div class="value">${treatmentPlan.primary_treatment}</div>
+              <div class="value">${primaryTreatmentText}</div>
             </div>
 
-            ${treatmentPlan.regimen ? `
+            ${regimenText ? `
             <div class="treatment-block">
               <h2>Рекомендуемая схема (Протокол)</h2>
-              <div class="regimen">${treatmentPlan.regimen}</div>
+              <div class="regimen">${regimenText}</div>
             </div>
             ` : ''}
 
@@ -128,6 +169,15 @@ export function TreatmentPage() {
               <h2>Рекомендации пациенту</h2>
               <ul>
                 ${recommendations.map((item: string) => `<li>${item}</li>`).join('')}
+              </ul>
+            </div>
+            ` : ''}
+
+            ${prescriptions.length > 0 ? `
+            <div class="treatment-block">
+              <h2>Назначения</h2>
+              <ul>
+                ${prescriptions.map((item) => `<li><strong>${item.name}</strong>: ${item.details}</li>`).join('')}
               </ul>
             </div>
             ` : ''}
@@ -152,18 +202,32 @@ export function TreatmentPage() {
         onClose={() => setIsPromptOpen(false)}
         promptText={promptText}
         onConfirm={handleConfirmGeneratePlan}
-        isLoading={isLoading}
+        isLoading={isRunningCurrentTask}
+      />
+      <RawAiResponseDialog
+        isOpen={isRawResponseOpen}
+        onClose={() => setIsRawResponseOpen(false)}
+        title="Сырой ответ ИИ: Лечение"
+        rawResponse={rawDebugState?.rawResponse || ''}
+        responseFormat={rawDebugState?.rawResponseFormat}
+        provider={rawDebugState?.rawProvider}
+        responseTime={rawDebugState?.rawResponseTime}
+        wasRepaired={rawDebugState?.wasRepaired}
       />
 
       <div className="flex justify-between items-center no-print">
         <h2 className="text-3xl font-bold tracking-tight">Лечение</h2>
         <div className="flex gap-2">
-          <Button onClick={handleGeneratePlan} disabled={isLoading} className="gap-2" variant="outline">
-            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Pill className="w-4 h-4" />}
+          <Button onClick={handleGeneratePlan} disabled={hasRunningAiTask} className="gap-2" variant="outline">
+            {isRunningCurrentTask ? <Loader2 className="w-4 h-4 animate-spin" /> : <Pill className="w-4 h-4" />}
             {treatmentPlan ? "Обновить план лечения" : "Сформировать план лечения"}
           </Button>
-          {treatmentPlan && (
+          {(treatmentPlan || rawDebugState) && (
             <>
+              <Button variant="outline" onClick={() => setIsRawResponseOpen(true)} className="gap-2">
+                <FileCode2 className="w-4 h-4" />
+                Сырой ответ ИИ
+              </Button>
               <Button variant="outline" onClick={handlePrint}>
                 Печать назначений
               </Button>
@@ -180,6 +244,24 @@ export function TreatmentPage() {
           <CardContent className="flex flex-col items-center justify-center py-12 text-slate-500">
             <Pill className="w-12 h-12 mb-4 opacity-20" />
             <p>Нажмите кнопку выше, чтобы получить рекомендации по лечению на основе диагноза.</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {retryContext?.rawResponse && (
+        <Card className="border-blue-200 bg-blue-50">
+          <CardContent className="flex flex-col gap-3 py-4 text-sm text-blue-900 md:flex-row md:items-center md:justify-between">
+            <div>
+              Следующий ручной запрос на лечение будет дополнен сырым ответом предыдущей модели как справочным контекстом.
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setIsRawResponseOpen(true)}>
+                Показать сырой ответ
+              </Button>
+              <Button variant="outline" onClick={() => clearRetryContext('treatment')}>
+                Не использовать
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -208,19 +290,19 @@ export function TreatmentPage() {
           {/* Strategy */}
           <Card className="border-l-4 border-l-blue-600">
             <CardHeader>
-              <CardTitle>Стратегия лечения: {treatmentPlan.treatment_strategy}</CardTitle>
+              <CardTitle>Стратегия лечения: {treatmentStrategyText || 'Не указана'}</CardTitle>
               <CardDescription className="flex items-center gap-2">
                 <BookOpen className="w-4 h-4" />
-                Источник: {treatmentPlan.cr_source}
+                Источник: {crSourceText || 'Не указан'}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-lg text-slate-800">{treatmentPlan.primary_treatment}</p>
+              <p className="text-lg text-slate-800">{primaryTreatmentText || 'Не указано'}</p>
             </CardContent>
           </Card>
 
           {/* Regimen */}
-          {treatmentPlan.regimen && (
+          {regimenText && (
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -230,13 +312,14 @@ export function TreatmentPage() {
               </CardHeader>
               <CardContent>
                 <div className="bg-slate-100 p-4 rounded-md font-mono text-sm text-slate-800">
-                  {treatmentPlan.regimen}
+                  {regimenText}
                 </div>
               </CardContent>
             </Card>
           )}
 
           {/* Recommendations */}
+          {recommendations.length > 0 && (
           <Card>
             <CardHeader>
               <CardTitle>Рекомендации пациенту</CardTitle>
@@ -249,6 +332,33 @@ export function TreatmentPage() {
               </ul>
             </CardContent>
           </Card>
+          )}
+
+          {prescriptions.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Назначения</CardTitle>
+                <CardDescription>
+                  Выделено из структурированного ответа ИИ и будет доступно также на вкладке `Назначения`.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {prescriptions.map((item, index) => (
+                    <div key={`${item.name}-${index}`} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex items-center gap-2">
+                        <span className="rounded bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
+                          {item.type}
+                        </span>
+                        <span className="font-semibold text-slate-900">{item.name}</span>
+                      </div>
+                      <div className="mt-2 text-sm leading-6 text-slate-700">{item.details}</div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
     </div>

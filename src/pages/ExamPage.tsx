@@ -77,6 +77,18 @@ export function ExamPage() {
     handleSave();
   };
 
+  const registerCheckbox = (fieldName: string) => {
+    const { onChange, ...field } = register(fieldName);
+
+    return {
+      ...field,
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
+        onChange(event);
+        handleSave();
+      },
+    };
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -180,8 +192,7 @@ export function ExamPage() {
                     <label key={`right_${sign}`} className="flex items-center gap-2 text-sm cursor-pointer">
                       <input 
                         type="checkbox" 
-                        {...register(`mammary_right_${sign}`)} 
-                        onChange={() => handleSave()}
+                        {...registerCheckbox(`mammary_right_${sign}`)}
                         className="w-4 h-4 rounded border-slate-300" 
                       />
                       {sign}
@@ -202,8 +213,7 @@ export function ExamPage() {
                     <label key={`left_${sign}`} className="flex items-center gap-2 text-sm cursor-pointer">
                       <input 
                         type="checkbox" 
-                        {...register(`mammary_left_${sign}`)} 
-                        onChange={() => handleSave()}
+                        {...registerCheckbox(`mammary_left_${sign}`)}
                         className="w-4 h-4 rounded border-slate-300" 
                       />
                       {sign}
@@ -240,8 +250,7 @@ export function ExamPage() {
                   <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
                     <input 
                       type="checkbox" 
-                      {...register(`${system.id}_norm`)}
-                      onChange={() => handleSave()}
+                      {...registerCheckbox(`${system.id}_norm`)}
                       className="w-4 h-4 rounded border-slate-300 text-blue-600"
                     />
                     Без патологии

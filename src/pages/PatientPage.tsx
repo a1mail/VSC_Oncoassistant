@@ -320,7 +320,6 @@ export function PatientPage() {
                     <select
                       className="w-full h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
                       {...register("menopause_mode")}
-                      onChange={handleBlur}
                     >
                       <option value="auto">Автоматический расчет (по КР РМЖ)</option>
                       <option value="manual">Ручной выбор врачом</option>
@@ -343,7 +342,6 @@ export function PatientPage() {
                       <input
                         type="checkbox"
                         {...register("bilateral_oophorectomy")}
-                        onChange={handleBlur}
                         className="w-4 h-4 text-blue-600"
                       />
                       Да
@@ -356,7 +354,6 @@ export function PatientPage() {
                       <select
                         className="w-full h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
                         {...register("menopause_status_manual")}
-                        onChange={handleBlur}
                       >
                         <option value="premenopause">Пременопауза</option>
                         <option value="perimenopause">Перименопауза</option>

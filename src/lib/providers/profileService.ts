@@ -5,6 +5,9 @@
  * (Keys are still kept private - never exposed in UI after saving)
  */
 
+import { OpenRouterModelInfo } from './types';
+import { getOpenRouterModelInfo } from './openrouterModelRegistry';
+
 export interface SavedProviderProfile {
   id: string;
   name: string;
@@ -12,6 +15,7 @@ export interface SavedProviderProfile {
   modelName: string;
   baseUrl?: string;
   apiKey?: string;
+  openRouterModelInfo?: OpenRouterModelInfo;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -30,6 +34,49 @@ class ProfileService {
   private readonly STORAGE_KEY = 'onco_ai_provider_profiles';
   private profiles: SavedProviderProfile[] = [];
 
+  private generateUniqueId(): string {
+    const randomPart =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+
+    return `profile-${Date.now()}-${randomPart}`;
+  }
+
+  private normalizeProfiles(rawProfiles: SavedProviderProfile[]): SavedProviderProfile[] {
+    const seenIds = new Set<string>();
+    let changed = false;
+
+    const normalized = rawProfiles.map((profile) => {
+      const candidateId = typeof profile.id === 'string' && profile.id.trim() ? profile.id : this.generateUniqueId();
+      if (seenIds.has(candidateId)) {
+        changed = true;
+        return {
+          ...profile,
+          id: this.generateUniqueId(),
+        };
+      }
+
+      seenIds.add(candidateId);
+      if (candidateId !== profile.id) {
+        changed = true;
+        return {
+          ...profile,
+          id: candidateId,
+        };
+      }
+
+      return profile;
+    });
+
+    if (changed) {
+      this.profiles = normalized;
+      this.saveProfiles();
+    }
+
+    return normalized;
+  }
+
   constructor() {
     this.loadProfiles();
   }
@@ -42,7 +89,8 @@ class ProfileService {
   private loadProfiles(): void {
     try {
       const stored = localStorage.getItem(this.STORAGE_KEY);
-      this.profiles = stored ? JSON.parse(stored) : [];
+      const parsed = stored ? JSON.parse(stored) : [];
+      this.profiles = Array.isArray(parsed) ? this.normalizeProfiles(parsed) : [];
       console.log(`✓ Loaded ${this.profiles.length} profiles from localStorage`);
     } catch (error) {
       console.error('Failed to load profiles:', error);
@@ -97,7 +145,7 @@ class ProfileService {
   createProfile(data: Omit<SavedProviderProfile, 'id' | 'createdAt' | 'updatedAt'>): SavedProviderProfile {
     const profile: SavedProviderProfile = {
       ...data,
-      id: Date.now().toString(),
+      id: this.generateUniqueId(),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -110,6 +158,13 @@ class ProfileService {
     this.profiles.push(profile);
     this.saveProfiles();
     return profile;
+  }
+
+  async createProfileWithMetadata(
+    data: Omit<SavedProviderProfile, 'id' | 'createdAt' | 'updatedAt'>,
+  ): Promise<SavedProviderProfile> {
+    const created = this.createProfile(data);
+    return (await this.refreshOpenRouterMetadata(created.id)) || created;
   }
 
   /**
@@ -136,6 +191,18 @@ class ProfileService {
     this.profiles[index] = profile;
     this.saveProfiles();
     return profile;
+  }
+
+  async updateProfileWithMetadata(
+    id: string,
+    data: Partial<SavedProviderProfile>,
+  ): Promise<SavedProviderProfile | null> {
+    const updated = this.updateProfile(id, data);
+    if (!updated) {
+      return null;
+    }
+
+    return this.refreshOpenRouterMetadata(id);
   }
 
   /**
@@ -189,6 +256,28 @@ class ProfileService {
   clearAll(): void {
     this.profiles = [];
     this.saveProfiles();
+  }
+
+  /**
+   * Enriches OpenRouter profiles with capabilities from the OpenRouter model registry.
+   * We persist the metadata so the runtime can route requests without re-fetching it every time.
+   */
+  async refreshOpenRouterMetadata(
+    id: string,
+    options: { forceRefresh?: boolean } = {},
+  ): Promise<SavedProviderProfile | null> {
+    const profile = this.getProfile(id);
+    if (!profile || profile.type !== 'openrouter' || !profile.modelName.trim()) {
+      return profile;
+    }
+
+    const modelInfo = await getOpenRouterModelInfo(profile.modelName, options);
+    if (!modelInfo) {
+      return profile;
+    }
+
+    const updatedProfile = this.updateProfile(id, { openRouterModelInfo: modelInfo });
+    return updatedProfile;
   }
 }
 

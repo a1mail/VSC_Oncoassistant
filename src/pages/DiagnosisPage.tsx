@@ -4,18 +4,45 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { aiService } from '@/lib/aiService';
-import { Brain, AlertCircle, CheckCircle, Loader2, ArrowRight } from 'lucide-react';
+import { Brain, AlertCircle, CheckCircle, Loader2, ArrowRight, FileCode2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { PromptPreviewDialog } from '@/components/PromptPreviewDialog';
+import { RawAiResponseDialog } from '@/components/RawAiResponseDialog';
+
+type RawAiDebugState = {
+  rawResponse: string;
+  rawResponseFormat?: string;
+  rawProvider?: string;
+  rawResponseTime?: number;
+  wasRepaired?: boolean;
+};
+
+function extractRawAiDebugState(value: any): RawAiDebugState | null {
+  if (!value || typeof value !== 'object' || typeof value.rawResponse !== 'string' || !value.rawResponse.trim()) {
+    return null;
+  }
+
+  return {
+    rawResponse: value.rawResponse,
+    rawResponseFormat: value.rawResponseFormat,
+    rawProvider: value.rawProvider,
+    rawResponseTime: value.rawResponseTime,
+    wasRepaired: value.wasRepaired,
+  };
+}
 
 export function DiagnosisPage() {
-  const { data, updateData, consultationId } = useConsultation();
-  const [isLoading, setIsLoading] = useState(false);
+  const { data, consultationId, updateData, activeAiTask, retryContexts, startAiRequest, clearRetryContext } = useConsultation();
   const [aiResult, setAiResult] = useState<any>(data.diagnosis || null);
+  const [rawDebugState, setRawDebugState] = useState<RawAiDebugState | null>(extractRawAiDebugState(data.diagnosis));
   const [isPromptOpen, setIsPromptOpen] = useState(false);
+  const [isRawResponseOpen, setIsRawResponseOpen] = useState(false);
   const [promptText, setPromptText] = useState('');
   const navigate = useNavigate();
+  const hasRunningAiTask = activeAiTask?.status === 'running';
+  const isRunningCurrentTask = activeAiTask?.section === 'diagnosis' && activeAiTask.status === 'running';
+  const retryContext = retryContexts.diagnosis;
   const missingData = Array.isArray(aiResult?.missing_data)
     ? aiResult.missing_data
     : typeof aiResult?.missing_data === 'string' && aiResult.missing_data.trim()
@@ -24,9 +51,20 @@ export function DiagnosisPage() {
 
   React.useEffect(() => {
     setAiResult(data.diagnosis || null);
+    setRawDebugState(extractRawAiDebugState(data.diagnosis));
   }, [consultationId, data.diagnosis]);
 
+  React.useEffect(() => {
+    if (activeAiTask?.section === 'diagnosis' && activeAiTask.status !== 'running') {
+      setIsPromptOpen(false);
+    }
+  }, [activeAiTask]);
+
   const handleAnalyze = async () => {
+    if (hasRunningAiTask) {
+      return;
+    }
+
     // Prepare sanitized data for AI
     const patientContext = {
       age: data.patient?.birth_date ? new Date().getFullYear() - new Date(data.patient.birth_date).getFullYear() : 'Unknown',
@@ -38,28 +76,25 @@ export function DiagnosisPage() {
       diagnostics: data.diagnostics
     };
 
-    const prompt = aiService.prepareDiagnosisPrompt(patientContext, data.documents || []);
-    setPromptText(prompt);
+    let prompt = aiService.prepareDiagnosisPrompt(patientContext, data.documents || []);
+    if (retryContext?.rawResponse) {
+      prompt = aiService.appendRawResponseRetryContext(prompt, 'diagnosis', retryContext.rawResponse, {
+        provider: retryContext.rawProvider,
+        previousError: retryContext.sourceErrorMessage,
+      });
+    }
+    setPromptText(aiService.getFinalExecutionPrompt(prompt));
     setIsPromptOpen(true);
   };
 
-  const handleConfirmAnalyze = async (finalPrompt: string) => {
-    setIsLoading(true);
-    try {
-      const result = await aiService.executeRawPrompt(finalPrompt, data.documents || []);
-      setAiResult(result);
-      updateData('diagnosis', result);
-      setIsPromptOpen(false);
-    } catch (error) {
+  const handleConfirmAnalyze = (finalPrompt: string) => {
+    void startAiRequest('diagnosis', finalPrompt, data.documents || []).catch((error) => {
       console.error(error);
-      if (error instanceof Error) {
-        alert(`Ошибка ИИ: ${error.message}`);
-      } else {
-        alert("Ошибка при обращении к ИИ. Проверьте консоль.");
+      const extractedRawDebugState = extractRawAiDebugState(error);
+      if (extractedRawDebugState) {
+        setRawDebugState(extractedRawDebugState);
       }
-    } finally {
-      setIsLoading(false);
-    }
+    });
   };
 
   const handleConfirm = () => {
@@ -140,18 +175,32 @@ export function DiagnosisPage() {
         onClose={() => setIsPromptOpen(false)}
         promptText={promptText}
         onConfirm={handleConfirmAnalyze}
-        isLoading={isLoading}
+        isLoading={isRunningCurrentTask}
+      />
+      <RawAiResponseDialog
+        isOpen={isRawResponseOpen}
+        onClose={() => setIsRawResponseOpen(false)}
+        title="Сырой ответ ИИ: Диагноз"
+        rawResponse={rawDebugState?.rawResponse || ''}
+        responseFormat={rawDebugState?.rawResponseFormat}
+        provider={rawDebugState?.rawProvider}
+        responseTime={rawDebugState?.rawResponseTime}
+        wasRepaired={rawDebugState?.wasRepaired}
       />
 
       <div className="flex justify-between items-center no-print">
         <h2 className="text-3xl font-bold tracking-tight">Диагноз</h2>
         <div className="flex gap-2">
-          <Button onClick={handleAnalyze} disabled={isLoading} className="gap-2" variant="outline">
-            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Brain className="w-4 h-4" />}
+          <Button onClick={handleAnalyze} disabled={hasRunningAiTask} className="gap-2" variant="outline">
+            {isRunningCurrentTask ? <Loader2 className="w-4 h-4 animate-spin" /> : <Brain className="w-4 h-4" />}
             {aiResult ? "Пересчитать диагноз" : "Сформировать диагноз с ИИ"}
           </Button>
-          {aiResult && (
+          {(aiResult || rawDebugState) && (
             <>
+              <Button variant="outline" onClick={() => setIsRawResponseOpen(true)} className="gap-2">
+                <FileCode2 className="w-4 h-4" />
+                Сырой ответ ИИ
+              </Button>
               <Button variant="outline" onClick={handlePrint}>
                 Печать
               </Button>
@@ -168,6 +217,24 @@ export function DiagnosisPage() {
           <CardContent className="flex flex-col items-center justify-center py-12 text-slate-500">
             <Brain className="w-12 h-12 mb-4 opacity-20" />
             <p>Нажмите кнопку выше, чтобы проанализировать данные и сформировать диагноз.</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {retryContext?.rawResponse && (
+        <Card className="border-blue-200 bg-blue-50">
+          <CardContent className="flex flex-col gap-3 py-4 text-sm text-blue-900 md:flex-row md:items-center md:justify-between">
+            <div>
+              Следующий ручной запрос на диагноз будет дополнен сырым ответом предыдущей модели как справочным контекстом.
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setIsRawResponseOpen(true)}>
+                Показать сырой ответ
+              </Button>
+              <Button variant="outline" onClick={() => clearRetryContext('diagnosis')}>
+                Не использовать
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}

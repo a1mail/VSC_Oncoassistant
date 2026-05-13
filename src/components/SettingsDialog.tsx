@@ -3,12 +3,14 @@
  * Manages API provider profiles with simple create/edit/delete interface
  */
 
-import React, { useState, useEffect } from 'react';
-import { Settings, X, Edit2, Trash2, Plus, AlertCircle, FileText, Save } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Settings, X, Edit2, Trash2, Plus, AlertCircle, FileText, Save, Upload } from 'lucide-react';
 import { profileService, SavedProviderProfile, ProviderListItem } from '@/lib/providers/profileService';
+import { ProviderFactory } from '@/lib/providers';
 import { ProviderForm } from './ProviderForm';
 import { aiService } from '@/lib/aiServiceCompat';
 import { Button } from '@/components/ui/button';
+import { MultiSelect } from '@/components/ui/multi-select';
 
 const PROVIDER_LABELS: Record<string, string> = {
   gemini: 'Google Gemini',
@@ -30,6 +32,422 @@ type Prompt = {
   content: string;
 };
 
+type ImportedProfileData = Omit<SavedProviderProfile, 'id' | 'createdAt' | 'updatedAt'>;
+
+type ParsedImportFields = {
+  names: string[];
+  models: string[];
+  providers: string[];
+  baseUrls: string[];
+  apiKeys: string[];
+  shared: {
+    name?: string;
+    model?: string;
+    provider?: string;
+    baseUrl?: string;
+    apiKey?: string;
+  };
+};
+
+const PROVIDER_TYPE_ALIASES: Record<string, SavedProviderProfile['type']> = {
+  gemini: 'gemini',
+  googlegemini: 'gemini',
+  google: 'gemini',
+  openai: 'openai_compatible',
+  openaicompatible: 'openai_compatible',
+  anthropic: 'anthropic',
+  claude: 'anthropic',
+  deepseek: 'deepseek',
+  qwen: 'qwen',
+  alibabaqwen: 'qwen',
+  gigachat: 'gigachat',
+  sbergigachat: 'gigachat',
+  yandexalice: 'alice',
+  alice: 'alice',
+  openrouter: 'openrouter',
+  aitunnel: 'aitunnel',
+  local: 'local',
+  ollama: 'local',
+  lmstudio: 'local',
+};
+
+const createEmptyParsedImportFields = (): ParsedImportFields => ({
+  names: [],
+  models: [],
+  providers: [],
+  baseUrls: [],
+  apiKeys: [],
+  shared: {},
+});
+
+const normalizeImportKey = (key: string): string =>
+  key.toLowerCase().replace(/[\s_\-.]+/g, '');
+
+const stripWrappingQuotes = (value: string): string =>
+  value.trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+
+const splitListValue = (value: string): string[] =>
+  value
+    .split(/[\n,;|]+/)
+    .map((item) => stripWrappingQuotes(item))
+    .filter(Boolean);
+
+const isLikelyUrl = (value: string): boolean =>
+  /^https?:\/\//i.test(value) || /^http:\/\/localhost/i.test(value);
+
+const isLikelyApiKey = (value: string): boolean =>
+  /^(sk-|sk_or_|skorv1-|sk-or-v1-|AIza|gsk_|sess-|token-)/i.test(value) || value.length > 20;
+
+const getStringValue = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const normalized = stripWrappingQuotes(value);
+  return normalized || undefined;
+};
+
+const getStringArray = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value
+      .flatMap((item) => (typeof item === 'string' ? splitListValue(item) : []))
+      .filter(Boolean);
+  }
+
+  if (typeof value === 'string') {
+    return splitListValue(value);
+  }
+
+  return [];
+};
+
+const normalizeProviderType = (value?: string, baseUrl?: string, modelName?: string): SavedProviderProfile['type'] => {
+  const normalizedValue = normalizeImportKey(value || '');
+  if (normalizedValue && PROVIDER_TYPE_ALIASES[normalizedValue]) {
+    return PROVIDER_TYPE_ALIASES[normalizedValue];
+  }
+
+  const url = (baseUrl || '').toLowerCase();
+  if (url.includes('openrouter.ai')) return 'openrouter';
+  if (url.includes('generativelanguage.googleapis.com') || url.includes('googleapis.com')) return 'gemini';
+  if (url.includes('anthropic.com')) return 'anthropic';
+  if (url.includes('deepseek.com')) return 'deepseek';
+  if (url.includes('dashscope') || url.includes('qwen')) return 'qwen';
+  if (url.includes('gigachat')) return 'gigachat';
+  if (url.includes('yandex') || url.includes('alice')) return 'alice';
+  if (url.includes('aitunnel')) return 'aitunnel';
+  if (url.includes('localhost:11434') || url.includes('ollama') || url.includes('lmstudio')) return 'local';
+
+  const model = (modelName || '').toLowerCase();
+  if (model.startsWith('gemini')) return 'gemini';
+  if (model.startsWith('claude')) return 'anthropic';
+  if (model.startsWith('deepseek')) return 'deepseek';
+  if (model.startsWith('qwen')) return 'qwen';
+
+  return 'openai_compatible';
+};
+
+const assignParsedValue = (
+  field: keyof Omit<ParsedImportFields, 'shared'> | keyof ParsedImportFields['shared'],
+  values: string[],
+  target: ParsedImportFields,
+  index?: number,
+) => {
+  if (field in target.shared) {
+    if (typeof index === 'number') {
+      const collection = target[field as keyof Omit<ParsedImportFields, 'shared'>];
+      if (Array.isArray(collection) && values[0]) {
+        collection[index] = values[0];
+      }
+      return;
+    }
+
+    if (values.length > 1) {
+      const collection = target[field as keyof Omit<ParsedImportFields, 'shared'>];
+      if (Array.isArray(collection)) {
+        values.forEach((value, idx) => {
+          collection[idx] = value;
+        });
+      }
+      return;
+    }
+
+    target.shared[field as keyof ParsedImportFields['shared']] = values[0];
+  }
+};
+
+const parseTextImport = (content: string): ParsedImportFields => {
+  const parsed = createEmptyParsedImportFields();
+  const lines = content.split(/\r?\n/);
+  let pendingListField: 'models' | null = null;
+  let pendingScalarField: keyof ParsedImportFields['shared'] | null = null;
+
+  const isStructuredImportKey = (value: string): boolean => {
+    const normalized = normalizeImportKey(value);
+    return [
+      'name',
+      'profilename',
+      'profile',
+      'model',
+      'modelname',
+      'models',
+      'provider',
+      'providertype',
+      'providers',
+      'providerforallmodels',
+      'baseurl',
+      'baseurlforallmodels',
+      'apiurl',
+      'apiurlforallmodels',
+      'url',
+      'urlforallmodels',
+      'endpoint',
+      'apikey',
+      'apikeyforallmodels',
+      'apiforallmodels',
+      'token',
+      'tokenforallmodels',
+      'key',
+      'keyforallmodels',
+      'secret',
+      'secretforallmodels',
+    ].some((knownKey) => normalized === knownKey || normalized.startsWith(`${knownKey}`));
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+
+    const providerDashMatch = line.match(/^provider\s*-\s*(.+?)(?:\s*-\s*for\s+all\s+models)?$/i);
+    if (providerDashMatch) {
+      parsed.shared.provider = stripWrappingQuotes(providerDashMatch[1]);
+      pendingListField = null;
+      pendingScalarField = null;
+      continue;
+    }
+
+    const baseUrlDashMatch = line.match(/^base[_\s-]*url\s*-\s*(.+)$/i);
+    if (baseUrlDashMatch) {
+      parsed.shared.baseUrl = stripWrappingQuotes(baseUrlDashMatch[1]);
+      pendingListField = null;
+      pendingScalarField = null;
+      continue;
+    }
+
+    const apiDashMatch = line.match(/^(api(?:[_\s-]*key)?|token|secret)\s*-\s*(.+)$/i);
+    if (apiDashMatch) {
+      parsed.shared.apiKey = stripWrappingQuotes(apiDashMatch[2]);
+      pendingListField = null;
+      pendingScalarField = 'apiKey';
+      continue;
+    }
+
+    const keyValueMatch = line.match(/^([^:=]+)\s*[:=]\s*(.+)$/);
+    const keyOnlyMatch = line.match(/^([^:=]+)\s*[:=]\s*$/);
+
+    if (pendingListField === 'models') {
+      const looksLikeNewSection =
+        (!!keyOnlyMatch && isStructuredImportKey(keyOnlyMatch[1])) ||
+        (!!keyValueMatch && isStructuredImportKey(keyValueMatch[1]));
+
+      if (!looksLikeNewSection) {
+        parsed.models.push(stripWrappingQuotes(line));
+        continue;
+      }
+    }
+
+    if (!keyValueMatch) {
+      if (keyOnlyMatch) {
+        const normalizedKey = normalizeImportKey(keyOnlyMatch[1]);
+        if (['model', 'modelname', 'models'].includes(normalizedKey)) {
+          pendingListField = 'models';
+          pendingScalarField = null;
+          continue;
+        }
+      }
+
+      if (pendingListField === 'models') {
+        parsed.models.push(stripWrappingQuotes(line));
+        continue;
+      }
+
+      if (pendingScalarField === 'apiKey' && parsed.shared.apiKey && !line.includes(':') && !line.includes('=')) {
+        parsed.shared.apiKey = `${parsed.shared.apiKey}${stripWrappingQuotes(line)}`;
+        continue;
+      }
+
+      if (!parsed.shared.baseUrl && isLikelyUrl(line)) {
+        parsed.shared.baseUrl = stripWrappingQuotes(line);
+      } else if (!parsed.shared.apiKey && isLikelyApiKey(line)) {
+        parsed.shared.apiKey = stripWrappingQuotes(line);
+      }
+      continue;
+    }
+
+    const [, rawKey, rawValue] = keyValueMatch;
+    const normalizedKey = normalizeImportKey(rawKey);
+    const values = splitListValue(rawValue);
+    if (values.length === 0) continue;
+
+    const indexedMatch = normalizedKey.match(/^(name|profilename|profile|modelname|model|providertype|provider|type|baseurl|apiurl|url|endpoint|apikey|apitoken|token|key|secret)(\d+)$/);
+    const index = indexedMatch ? Number(indexedMatch[2]) - 1 : undefined;
+    const baseKey = indexedMatch ? indexedMatch[1] : normalizedKey;
+
+    if (['name', 'profilename', 'profile'].includes(baseKey)) {
+      assignParsedValue('name', values, parsed, index);
+      pendingScalarField = 'name';
+      pendingListField = null;
+    } else if (['model', 'modelname', 'models'].includes(baseKey)) {
+      assignParsedValue('model', values, parsed, index);
+      pendingListField = values.length === 0 ? 'models' : null;
+      pendingScalarField = null;
+    } else if (['providertype', 'provider', 'type', 'providers'].includes(baseKey)) {
+      assignParsedValue('provider', values, parsed, index);
+      pendingScalarField = 'provider';
+      pendingListField = null;
+    } else if (['providerforallmodels', 'providersforallmodels'].includes(baseKey)) {
+      assignParsedValue('provider', values, parsed, index);
+      pendingScalarField = 'provider';
+      pendingListField = null;
+    } else if (['baseurl', 'apiurl', 'url', 'endpoint', 'urls'].includes(baseKey)) {
+      assignParsedValue('baseUrl', values, parsed, index);
+      pendingScalarField = 'baseUrl';
+      pendingListField = null;
+    } else if (['baseurlforallmodels', 'urlforallmodels', 'apiurlforallmodels'].includes(baseKey)) {
+      assignParsedValue('baseUrl', values, parsed, index);
+      pendingScalarField = 'baseUrl';
+      pendingListField = null;
+    } else if (['apikey', 'apitoken', 'token', 'key', 'secret', 'keys'].includes(baseKey)) {
+      assignParsedValue('apiKey', values, parsed, index);
+      pendingScalarField = 'apiKey';
+      pendingListField = null;
+    } else if (['apiforallmodels', 'apikeyforallmodels', 'tokenforallmodels', 'keyforallmodels', 'secretforallmodels'].includes(baseKey)) {
+      assignParsedValue('apiKey', values, parsed, index);
+      pendingScalarField = 'apiKey';
+      pendingListField = null;
+    }
+  }
+
+  return parsed;
+};
+
+const parseObjectImport = (input: Record<string, unknown>): ParsedImportFields => {
+  const parsed = createEmptyParsedImportFields();
+
+  const assignSharedFromAliases = (
+    aliases: string[],
+    field: keyof ParsedImportFields['shared'],
+    collection: keyof Omit<ParsedImportFields, 'shared'>,
+  ) => {
+    for (const alias of aliases) {
+      const value = input[alias];
+      if (value === undefined) continue;
+
+      const arrayValue = getStringArray(value);
+      if (arrayValue.length > 1) {
+        parsed[collection] = arrayValue;
+        return;
+      }
+
+      const stringValue = getStringValue(value);
+      if (stringValue) {
+        parsed.shared[field] = stringValue;
+        return;
+      }
+    }
+  };
+
+  assignSharedFromAliases(['name', 'profileName', 'profile_name', 'title'], 'name', 'names');
+  assignSharedFromAliases(['model', 'modelName', 'model_name', 'models'], 'model', 'models');
+  assignSharedFromAliases(['provider', 'providerType', 'provider_type', 'type', 'providers'], 'provider', 'providers');
+  assignSharedFromAliases(['baseUrl', 'base_url', 'url', 'apiUrl', 'endpoint', 'urls'], 'baseUrl', 'baseUrls');
+  assignSharedFromAliases(['apiKey', 'api_key', 'key', 'token', 'apiToken', 'secret', 'keys'], 'apiKey', 'apiKeys');
+
+  return parsed;
+};
+
+const buildImportedProfiles = (data: unknown): ImportedProfileData[] => {
+  if (Array.isArray(data)) {
+    return data.flatMap((item) => buildImportedProfiles(item));
+  }
+
+  if (!data || typeof data !== 'object') {
+    throw new Error('Файл не содержит данных профилей');
+  }
+
+  const record = data as Record<string, unknown>;
+
+  if (Array.isArray(record.profiles)) {
+    return buildImportedProfiles(record.profiles);
+  }
+
+  if (Array.isArray(record.providers) && record.providers.every((item) => item && typeof item === 'object')) {
+    return buildImportedProfiles(record.providers);
+  }
+
+  const parsed = parseObjectImport(record);
+  const totalProfiles = Math.max(
+    1,
+    parsed.names.length,
+    parsed.models.length,
+    parsed.providers.length,
+    parsed.baseUrls.length,
+    parsed.apiKeys.length,
+  );
+
+  const profiles: ImportedProfileData[] = [];
+
+  for (let index = 0; index < totalProfiles; index++) {
+    const rawModelName = parsed.models[index] || parsed.shared.model || '';
+    const rawBaseUrl = parsed.baseUrls[index] || parsed.shared.baseUrl || '';
+    const rawApiKey = parsed.apiKeys[index] || parsed.shared.apiKey || '';
+    const rawProvider = parsed.providers[index] || parsed.shared.provider || '';
+    const type = normalizeProviderType(rawProvider, rawBaseUrl, rawModelName);
+    const template = ProviderFactory.getProviderTemplate(type);
+    const modelName = rawModelName || String(template.modelName || '');
+    const baseUrl = rawBaseUrl || String(template.baseUrl || '');
+    const baseName = parsed.names[index] || parsed.shared.name || '';
+    const providerLabel = PROVIDER_LABELS[type] || type;
+    const name = totalProfiles > 1
+      ? (baseName ? `${baseName} - ${modelName || index + 1}` : `${providerLabel} - ${modelName || index + 1}`)
+      : (baseName || `${providerLabel} - ${modelName || 'imported'}`);
+
+    if (!modelName) {
+      throw new Error('Не удалось определить название модели из импортируемого файла');
+    }
+
+    profiles.push({
+      name,
+      type,
+      modelName,
+      baseUrl,
+      apiKey: rawApiKey,
+      isActive: false,
+    });
+  }
+
+  return profiles;
+};
+
+const parseImportedProfiles = (content: string): ImportedProfileData[] => {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    throw new Error('Файл пустой');
+  }
+
+  try {
+    return buildImportedProfiles(JSON.parse(trimmed));
+  } catch {
+    const parsedText = parseTextImport(trimmed);
+    return buildImportedProfiles(parsedText.shared.model || parsedText.models.length > 0
+      ? {
+          name: parsedText.shared.name,
+          model: parsedText.models.length > 0 ? parsedText.models : parsedText.shared.model,
+          provider: parsedText.providers.length > 0 ? parsedText.providers : parsedText.shared.provider,
+          baseUrl: parsedText.baseUrls.length > 0 ? parsedText.baseUrls : parsedText.shared.baseUrl,
+          apiKey: parsedText.apiKeys.length > 0 ? parsedText.apiKeys : parsedText.shared.apiKey,
+        }
+      : parsedText);
+  }
+};
+
 export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const [activeTab, setActiveTab] = useState<'providers' | 'prompts'>('providers');
   const [profiles, setProfiles] = useState<ProviderListItem[]>([]);
@@ -39,17 +457,19 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
   const [testingProfileId, setTestingProfileId] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, any>>({});
   const [enableFallback, setEnableFallback] = useState(true);
+  const [fallbackProfileIds, setFallbackProfileIds] = useState<string[]>([]);
   const [showFallbackWarning, setShowFallbackWarning] = useState(false);
 
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [editingPromptId, setEditingPromptId] = useState<string | null>(null);
   const [promptContent, setPromptContent] = useState('');
   const [isLoadingPrompts, setIsLoadingPrompts] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (isOpen) {
-      loadProfiles();
-      loadFallbackSetting();
+      const loadedProfiles = loadProfiles();
+      loadFallbackSetting(loadedProfiles);
       if (activeTab === 'prompts') {
         loadPrompts();
       }
@@ -96,39 +516,84 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
   };
 
   const loadProfiles = () => {
-    setProfiles(profileService.getAllProfiles());
+    const loadedProfiles = profileService.getAllProfiles();
+    setProfiles(loadedProfiles);
+    return loadedProfiles;
   };
 
-  const loadFallbackSetting = () => {
+  const loadFallbackSetting = (availableProfiles: ProviderListItem[] = profiles) => {
     try {
       const settings = localStorage.getItem('ai_settings_enhanced');
       if (settings) {
         const parsed = JSON.parse(settings);
         setEnableFallback(parsed.enableFallback !== false);
+        const availableIds = new Set(availableProfiles.map((profile) => profile.id));
+        const primaryProfileId =
+          typeof parsed.activeProfileId === 'string' && availableIds.has(parsed.activeProfileId)
+            ? parsed.activeProfileId
+            : availableProfiles.find((profile) => profile.isActive)?.id;
+        const storedFallbacks = Array.isArray(parsed.fallbackProfileIds) ? parsed.fallbackProfileIds : [];
+        setFallbackProfileIds(
+          storedFallbacks.filter(
+            (profileId: string, index: number) =>
+              typeof profileId === 'string' &&
+              storedFallbacks.indexOf(profileId) === index &&
+              availableIds.has(profileId) &&
+              profileId !== primaryProfileId,
+          ),
+        );
+      } else {
+        setEnableFallback(true);
+        setFallbackProfileIds([]);
       }
     } catch (error) {
       console.error('Error loading fallback setting:', error);
       setEnableFallback(true);
+      setFallbackProfileIds([]);
+    }
+  };
+
+  const saveFallbackConfiguration = (
+    nextEnableFallback: boolean,
+    nextFallbackProfileIds: string[],
+    nextActiveProfileId?: string,
+  ) => {
+    try {
+      const settings = localStorage.getItem('ai_settings_enhanced');
+      const parsed = settings ? JSON.parse(settings) : {};
+      const activeProfileId =
+        nextActiveProfileId || parsed.activeProfileId || profiles.find((profile) => profile.isActive)?.id || '';
+
+      parsed.enableFallback = nextEnableFallback;
+      parsed.activeProfileId = activeProfileId;
+      parsed.fallbackProfileIds = nextFallbackProfileIds.filter((profileId, index, all) => {
+        return (
+          typeof profileId === 'string' &&
+          profileId !== activeProfileId &&
+          all.indexOf(profileId) === index
+        );
+      });
+      localStorage.setItem('ai_settings_enhanced', JSON.stringify(parsed));
+    } catch (error) {
+      console.error('Error saving fallback setting:', error);
     }
   };
 
   const handleFallbackToggle = (newValue: boolean) => {
-    if (profiles.length > 1 && newValue) {
+    if (fallbackProfileIds.length > 0 && newValue) {
       // Enabling fallback with multiple profiles
       setShowFallbackWarning(true);
     }
     
     setEnableFallback(newValue);
-    
-    // Save to localStorage
-    try {
-      const settings = localStorage.getItem('ai_settings_enhanced');
-      const parsed = settings ? JSON.parse(settings) : {};
-      parsed.enableFallback = newValue;
-      localStorage.setItem('ai_settings_enhanced', JSON.stringify(parsed));
-    } catch (error) {
-      console.error('Error saving fallback setting:', error);
-    }
+    saveFallbackConfiguration(newValue, fallbackProfileIds);
+  };
+
+  const handleFallbackProfilesChange = (nextFallbackProfileIds: string[]) => {
+    const primaryProfileId = profiles.find((profile) => profile.isActive)?.id;
+    const sanitized = nextFallbackProfileIds.filter((profileId) => profileId !== primaryProfileId);
+    setFallbackProfileIds(sanitized);
+    saveFallbackConfiguration(enableFallback, sanitized, primaryProfileId);
   };
 
   const handleAddNew = () => {
@@ -153,31 +618,70 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
     }
     if (confirm('Delete this provider profile? This cannot be undone.')) {
       profileService.deleteProfile(id);
-      loadProfiles();
+      const nextProfiles = loadProfiles();
+      const nextActiveProfileId = nextProfiles.find((profile) => profile.isActive)?.id;
+      const nextFallbacks = fallbackProfileIds.filter((profileId) => profileId !== id && profileId !== nextActiveProfileId);
+      setFallbackProfileIds(nextFallbacks);
+      saveFallbackConfiguration(enableFallback, nextFallbacks, nextActiveProfileId);
+      aiService.syncProviderRuntime();
     }
   };
 
   const handleSetActive = (id: string) => {
     profileService.setActiveProfile(id);
+    const nextFallbacks = fallbackProfileIds.filter((profileId) => profileId !== id);
+    setFallbackProfileIds(nextFallbacks);
+    saveFallbackConfiguration(enableFallback, nextFallbacks, id);
     loadProfiles();
+    aiService.syncProviderRuntime();
   };
 
-  const handleSaveProfile = (data: Omit<SavedProviderProfile, 'id' | 'createdAt' | 'updatedAt'>) => {
-    if (editingProfileId) {
-      // Update existing
-      profileService.updateProfile(editingProfileId, data);
-    } else {
-      // Create new
-      profileService.createProfile(data);
+  const handleSaveProfile = async (data: Omit<SavedProviderProfile, 'id' | 'createdAt' | 'updatedAt'>) => {
+    try {
+      if (editingProfileId) {
+        await profileService.updateProfileWithMetadata(editingProfileId, data);
+      } else {
+        await profileService.createProfileWithMetadata(data);
+      }
+      const nextProfiles = loadProfiles();
+      loadFallbackSetting(nextProfiles);
+      aiService.syncProviderRuntime();
+      setView('list');
+    } catch (error) {
+      console.error('Failed to save provider profile:', error);
+      alert('Ошибка при сохранении профиля провайдера');
     }
-    loadProfiles();
-    setView('list');
   };
 
   const handleCancel = () => {
     setView('list');
     setEditingProfileId(null);
     setEditingProfile(null);
+  };
+
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const content = event.target?.result as string;
+        const profilesToCreate = parseImportedProfiles(content);
+        await Promise.all(
+          profilesToCreate.map((profile) => profileService.createProfileWithMetadata(profile)),
+        );
+
+        alert(`Успешно импортировано профилей: ${profilesToCreate.length}`);
+        const nextProfiles = loadProfiles();
+        loadFallbackSetting(nextProfiles);
+        aiService.syncProviderRuntime();
+      } catch (err: any) {
+        alert('Ошибка при импорте: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   const handleTestProvider = async (id: string) => {
@@ -268,13 +772,30 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
                     <p className="text-sm text-slate-600">
                       {profiles.length} {profiles.length === 1 ? 'profile' : 'profiles'} saved
                     </p>
-                    <button
-                      onClick={handleAddNew}
-                      className="flex items-center gap-1.5 bg-blue-600 text-white text-sm px-3 py-1.5 rounded-lg hover:bg-blue-700 font-medium transition-colors"
-                    >
-                      <Plus className="w-4 h-4" />
-                      Add Profile
-                    </button>
+                    <div className="flex gap-2">
+                      <input 
+                        type="file" 
+                        ref={fileInputRef} 
+                        onChange={handleImportFile} 
+                        className="hidden" 
+                        accept=".json,.txt"
+                      />
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="flex items-center gap-1.5 bg-slate-100 text-slate-700 text-sm px-3 py-1.5 rounded-lg hover:bg-slate-200 font-medium transition-colors"
+                        title="Импорт профилей (JSON/TXT)"
+                      >
+                        <Upload className="w-4 h-4" />
+                        Импорт
+                      </button>
+                      <button
+                        onClick={handleAddNew}
+                        className="flex items-center gap-1.5 bg-blue-600 text-white text-sm px-3 py-1.5 rounded-lg hover:bg-blue-700 font-medium transition-colors"
+                      >
+                        <Plus className="w-4 h-4" />
+                        Добавить
+                      </button>
+                    </div>
                   </div>
 
                   {/* Profiles List */}
@@ -331,7 +852,10 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
                           {/* Action Buttons */}
                           <div className="flex gap-1.5 flex-shrink-0">
                             <button
-                              onClick={() => handleTestProvider(profile.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleTestProvider(profile.id);
+                              }}
                               disabled={testingProfileId === profile.id}
                               className="p-2 text-slate-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                               title="Test provider connection"
@@ -343,7 +867,10 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
                               )}
                             </button>
                             <button
-                              onClick={() => handleEdit(profile.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleEdit(profile.id);
+                              }}
                               className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
                               title="Edit profile"
                             >
@@ -351,7 +878,10 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
                             </button>
                             {profiles.length > 1 && (
                               <button
-                                onClick={() => handleDelete(profile.id)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDelete(profile.id);
+                                }}
                                 className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                                 title="Delete profile"
                               >
@@ -421,11 +951,11 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
                       <div className="flex-1">
                         <h4 className="font-semibold text-slate-900 mb-1">Automatic Fallback</h4>
                         <p className="text-sm text-slate-700">
-                          When enabled, if your primary provider fails, OncoAssistant will automatically try other configured providers.
+                          Если включено, OncoAssistant будет переходить только к тем резервным моделям, которые вы явно выбрали ниже.
                         </p>
                         {profiles.length > 1 && (
                           <p className="text-xs text-amber-700 mt-2">
-                            ⚠️ You have {profiles.length} providers configured. Fallback could switch between them, potentially incurring charges on different services.
+                            ⚠️ Автопереключение больше не использует все подряд профили. Будут пробоваться только выбранные резервные модели.
                           </p>
                         )}
                       </div>
@@ -444,13 +974,63 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
                       </label>
                     </div>
 
-                    {showFallbackWarning && enableFallback && profiles.length > 1 && (
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <div className="text-sm font-medium text-slate-900">Предпочтительная модель</div>
+                        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                          {profiles.find((profile) => profile.isActive)?.name || 'Не выбрана'}
+                        </div>
+                        <p className="text-xs text-slate-500">
+                          Используется для текущего запроса в первую очередь.
+                        </p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="text-sm font-medium text-slate-900">Резервные модели</div>
+                        <MultiSelect
+                          options={profiles
+                            .filter((profile) => !profile.isActive)
+                            .map((profile) => ({
+                              value: profile.id,
+                              label: `${profile.name} (${PROVIDER_LABELS[profile.type] || profile.type})`,
+                            }))}
+                          selected={fallbackProfileIds}
+                          onChange={handleFallbackProfilesChange}
+                          placeholder="Выберите резервные модели"
+                        />
+                        <p className="text-xs text-slate-500">
+                          Порядок автопереключения соответствует порядку выбора моделей.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                      <div className="text-sm font-medium text-slate-900 mb-2">Прочие доступные модели</div>
+                      {profiles.filter((profile) => !profile.isActive && !fallbackProfileIds.includes(profile.id)).length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {profiles
+                            .filter((profile) => !profile.isActive && !fallbackProfileIds.includes(profile.id))
+                            .map((profile) => (
+                              <span
+                                key={profile.id}
+                                className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-700"
+                              >
+                                {profile.name}
+                              </span>
+                            ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-500">Все доступные модели уже выбраны как резервные.</p>
+                      )}
+                    </div>
+
+                    {showFallbackWarning && enableFallback && fallbackProfileIds.length > 0 && (
                       <div className="p-3 bg-orange-100 border border-orange-400 rounded text-sm text-orange-800">
-                        <strong>Important:</strong> Automatic fallback is now enabled. If your primary provider fails:
+                        <strong>Важно:</strong> Автопереключение включено. Если основная модель не сработает:
                         <ul className="mt-2 ml-4 list-disc space-y-1 text-xs">
-                          <li>System will try: {profiles.filter(p => !p.isActive).slice(0, 2).map(p => p.name).join(', ')}</li>
-                          <li>You may be charged by multiple providers</li>
-                          <li>Check your browser console (F12) to see which provider completed each request</li>
+                          <li>Система попробует только выбранные вами резервные модели: {fallbackProfileIds.map((profileId) => profiles.find((profile) => profile.id === profileId)?.name || profileId).join(', ')}</li>
+                          <li>Остальные профили не будут использоваться автоматически</li>
+                          <li>Возможны расходы у нескольких провайдеров, если резервные модели платные</li>
                         </ul>
                         <button
                           onClick={() => setShowFallbackWarning(false)}
@@ -463,7 +1043,13 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
 
                     {!enableFallback && (
                       <div className="p-3 bg-blue-100 border border-blue-400 rounded text-sm text-blue-800">
-                        <strong>Note:</strong> Fallback is disabled. If your primary provider fails, requests will return an error and no fallback will be attempted.
+                        <strong>Примечание:</strong> Автопереключение выключено. Если основная модель не ответит, запрос завершится ошибкой без перехода к резервным.
+                      </div>
+                    )}
+
+                    {enableFallback && fallbackProfileIds.length === 0 && (
+                      <div className="p-3 bg-slate-100 border border-slate-300 rounded text-sm text-slate-700">
+                        Резервные модели не выбраны. Даже при включённом автопереключении система не будет использовать другие профили, пока вы их явно не добавите.
                       </div>
                     )}
                   </div>

@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
+import { aiService } from '@/lib/aiService';
 
 type Document = {
   id: string;
@@ -25,6 +26,30 @@ type SaveResult = {
   type: 'success' | 'error' | 'warning';
 };
 
+type AiRequestSection = 'diagnosis' | 'treatment';
+
+type AiRetryContext = {
+  rawResponse: string;
+  rawProvider?: string;
+  rawResponseFormat?: string;
+  sourceErrorMessage?: string;
+};
+
+type AiRequestTask = {
+  id: string;
+  section: AiRequestSection;
+  prompt: string;
+  status: 'running' | 'success' | 'error';
+  startedAt: string;
+  isMinimized: boolean;
+  rawResponse?: string;
+  rawProvider?: string;
+  rawResponseFormat?: string;
+  rawResponseTime?: number;
+  wasRepaired?: boolean;
+  errorMessage?: string;
+};
+
 type ConsultationContextType = {
   data: ConsultationData;
   consultationId: string;
@@ -34,6 +59,14 @@ type ConsultationContextType = {
   triggerReload: () => void;
   saveStatus: 'idle' | 'saving' | 'saved' | 'error';
   lastSaved: Date | null;
+  activeAiTask: AiRequestTask | null;
+  retryContexts: Partial<Record<AiRequestSection, AiRetryContext>>;
+  startAiRequest: (section: AiRequestSection, prompt: string, documents?: Document[]) => Promise<void>;
+  minimizeAiTask: () => void;
+  restoreAiTask: () => void;
+  dismissAiTask: () => void;
+  markRawResponseForRetry: (section: AiRequestSection, payload?: AiRetryContext | null) => void;
+  clearRetryContext: (section: AiRequestSection) => void;
 };
 
 const ConsultationContext = createContext<ConsultationContextType | undefined>(undefined);
@@ -56,6 +89,8 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
   const [consultationId, setConsultationId] = useState<string>(Date.now().toString());
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [activeAiTask, setActiveAiTask] = useState<AiRequestTask | null>(null);
+  const [retryContexts, setRetryContexts] = useState<Partial<Record<AiRequestSection, AiRetryContext>>>({});
 
   const updateData = useCallback((section: keyof ConsultationData, value: any) => {
     setData((prev) => {
@@ -73,6 +108,8 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
 
   const resetData = useCallback(() => {
     setData({});
+    setActiveAiTask(null);
+    setRetryContexts({});
     if (typeof window !== 'undefined') {
       localStorage.removeItem(DRAFT_STORAGE_KEY);
     }
@@ -160,6 +197,111 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
     return () => clearTimeout(timer);
   }, [data, saveToServer]);
 
+  const markRawResponseForRetry = useCallback(
+    (section: AiRequestSection, payload?: AiRetryContext | null) => {
+      setRetryContexts((prev) => {
+        if (!payload?.rawResponse?.trim()) {
+          const next = { ...prev };
+          delete next[section];
+          return next;
+        }
+
+        return {
+          ...prev,
+          [section]: payload,
+        };
+      });
+    },
+    [],
+  );
+
+  const clearRetryContext = useCallback((section: AiRequestSection) => {
+    setRetryContexts((prev) => {
+      const next = { ...prev };
+      delete next[section];
+      return next;
+    });
+  }, []);
+
+  const minimizeAiTask = useCallback(() => {
+    setActiveAiTask((prev) => (prev ? { ...prev, isMinimized: true } : prev));
+  }, []);
+
+  const restoreAiTask = useCallback(() => {
+    setActiveAiTask((prev) => (prev ? { ...prev, isMinimized: false } : prev));
+  }, []);
+
+  const dismissAiTask = useCallback(() => {
+    setActiveAiTask((prev) => {
+      if (!prev || prev.status === 'running') {
+        return prev;
+      }
+
+      return null;
+    });
+  }, []);
+
+  const startAiRequest = useCallback(
+    async (section: AiRequestSection, prompt: string, documents: Document[] = []) => {
+      if (activeAiTask?.status === 'running') {
+        throw new Error('Уже выполняется другой AI-запрос. Дождитесь его завершения.');
+      }
+
+      const taskId = `${section}-${Date.now()}`;
+      setActiveAiTask({
+        id: taskId,
+        section,
+        prompt,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        isMinimized: false,
+      });
+
+      try {
+        const result = await aiService.executeRawPrompt(prompt, documents);
+        setSaveStatus('idle');
+        setData((prev) => ({ ...prev, [section]: result }));
+        clearRetryContext(section);
+        setActiveAiTask((prev) => {
+          if (!prev || prev.id !== taskId) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            status: 'success',
+            rawResponse: result?.rawResponse,
+            rawProvider: result?.rawProvider,
+            rawResponseFormat: result?.rawResponseFormat,
+            rawResponseTime: result?.rawResponseTime,
+            wasRepaired: result?.wasRepaired,
+            isMinimized: false,
+          };
+        });
+      } catch (error: any) {
+        setActiveAiTask((prev) => {
+          if (!prev || prev.id !== taskId) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            status: 'error',
+            errorMessage: error?.message || 'Ошибка при обращении к ИИ',
+            rawResponse: error?.rawResponse,
+            rawProvider: error?.rawProvider,
+            rawResponseFormat: error?.rawResponseFormat,
+            rawResponseTime: error?.rawResponseTime,
+            wasRepaired: error?.wasRepaired,
+            isMinimized: false,
+          };
+        });
+        throw error;
+      }
+    },
+    [activeAiTask?.status, clearRetryContext],
+  );
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
       localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(data));
@@ -167,7 +309,26 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
   }, [data]);
 
   return (
-    <ConsultationContext.Provider value={{ data, consultationId, updateData, resetData, saveToServer, triggerReload, saveStatus, lastSaved }}>
+    <ConsultationContext.Provider
+      value={{
+        data,
+        consultationId,
+        updateData,
+        resetData,
+        saveToServer,
+        triggerReload,
+        saveStatus,
+        lastSaved,
+        activeAiTask,
+        retryContexts,
+        startAiRequest,
+        minimizeAiTask,
+        restoreAiTask,
+        dismissAiTask,
+        markRawResponseForRetry,
+        clearRetryContext,
+      }}
+    >
       {children}
     </ConsultationContext.Provider>
   );

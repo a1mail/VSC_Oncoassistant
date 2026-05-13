@@ -41,15 +41,29 @@ const DEFAULT_ENHANCED_SETTINGS: EnhancedAISettings = {
   profiles: [DEFAULT_ENHANCED_PROFILE],
   activeProfileId: 'default-gemini',
   enableFallback: true,
+  fallbackProfileIds: [],
   selectionStrategy: 'FastestFirst',
   autoHealthCheck: true,
   healthCheckInterval: 30,
 };
 
+function supportsRequestedJson(profile: EnhancedAIProfile, context: RequestContext): boolean {
+  if (!context.requiresJSON) {
+    return true;
+  }
+
+  if (profile.providerType === 'openrouter' && profile.openRouterModelInfo) {
+    return profile.openRouterModelInfo.preferredStructuredFormat === 'json';
+  }
+
+  return profile.capabilities.supportsJSON;
+}
+
 export class EnhancedAIService {
   private static instance: EnhancedAIService;
   private settings: EnhancedAISettings;
   private adapters: Map<string, any> = new Map();
+  private adapterSignatures: Map<string, string> = new Map();
   private healthCheckTimer: NodeJS.Timeout | null = null;
 
   private constructor() {
@@ -74,22 +88,46 @@ export class EnhancedAIService {
     try {
       const stored = localStorage.getItem('ai_settings_enhanced');
       if (stored) {
-        return JSON.parse(stored);
+        return this.normalizeSettings(JSON.parse(stored));
       }
     } catch (error) {
       console.error('Failed to load enhanced settings:', error);
     }
 
     // Fallback to default
-    return { ...DEFAULT_ENHANCED_SETTINGS };
+    return this.normalizeSettings({ ...DEFAULT_ENHANCED_SETTINGS });
   }
 
   /**
    * Save settings to localStorage
    */
   saveSettings(settings: EnhancedAISettings): void {
-    this.settings = settings;
-    localStorage.setItem('ai_settings_enhanced', JSON.stringify(settings));
+    this.settings = this.normalizeSettings(settings);
+    localStorage.setItem('ai_settings_enhanced', JSON.stringify(this.settings));
+  }
+
+  private normalizeSettings(settings: Partial<EnhancedAISettings>): EnhancedAISettings {
+    const profiles = Array.isArray(settings.profiles) ? settings.profiles : DEFAULT_ENHANCED_SETTINGS.profiles;
+    const firstProfileId = profiles[0]?.id || DEFAULT_ENHANCED_SETTINGS.activeProfileId;
+    const activeProfileId =
+      typeof settings.activeProfileId === 'string' && profiles.some((profile) => profile.id === settings.activeProfileId)
+        ? settings.activeProfileId
+        : firstProfileId;
+    const fallbackProfileIds = Array.isArray(settings.fallbackProfileIds)
+      ? settings.fallbackProfileIds
+          .filter((profileId, index, all) => typeof profileId === 'string' && all.indexOf(profileId) === index)
+          .filter((profileId) => profileId !== activeProfileId && profiles.some((profile) => profile.id === profileId))
+      : [];
+
+    return {
+      profiles,
+      activeProfileId,
+      enableFallback: settings.enableFallback !== false,
+      fallbackProfileIds,
+      selectionStrategy: settings.selectionStrategy || DEFAULT_ENHANCED_SETTINGS.selectionStrategy,
+      autoHealthCheck: settings.autoHealthCheck ?? DEFAULT_ENHANCED_SETTINGS.autoHealthCheck,
+      healthCheckInterval: settings.healthCheckInterval ?? DEFAULT_ENHANCED_SETTINGS.healthCheckInterval,
+    };
   }
 
   /**
@@ -119,6 +157,7 @@ export class EnhancedAIService {
   setActiveProfile(profileId: string): void {
     if (this.settings.profiles.some(p => p.id === profileId)) {
       this.settings.activeProfileId = profileId;
+      this.settings.fallbackProfileIds = this.settings.fallbackProfileIds.filter((id) => id !== profileId);
       this.saveSettings(this.settings);
     }
   }
@@ -144,8 +183,10 @@ export class EnhancedAIService {
     if (this.settings.activeProfileId === profileId) {
       this.settings.activeProfileId = this.settings.profiles[0]?.id || '';
     }
+    this.settings.fallbackProfileIds = this.settings.fallbackProfileIds.filter((id) => id !== profileId);
     this.saveSettings(this.settings);
     this.adapters.delete(profileId);
+    this.adapterSignatures.delete(profileId);
   }
 
   /**
@@ -172,20 +213,43 @@ export class EnhancedAIService {
     // Reload latest settings before selecting provider
     this.settings = this.loadSettings();
 
+    const viableProfiles = this.settings.profiles.filter(p => {
+      if (p.providerType === 'local') {
+        return !!p.baseUrl?.trim();
+      }
+      return !!(p.apiKey?.trim() && p.baseUrl?.trim());
+    });
+
+    const jsonCapableProfiles = context.requiresJSON
+      ? viableProfiles.filter(p => supportsRequestedJson(p, context))
+      : viableProfiles;
+    const candidateProfiles = jsonCapableProfiles.length > 0 ? jsonCapableProfiles : viableProfiles;
+
+    const activeProfileId = context.preferredProfileId || this.settings.activeProfileId;
+    const explicitlyPreferredProfile =
+      typeof profileIdOrContext === 'string'
+        ? viableProfiles.find((profile) => profile.id === profileIdOrContext) || null
+        : viableProfiles.find((profile) => profile.id === activeProfileId) || null;
+    const pickFallbackProfile = (): EnhancedAIProfile | null => {
+      if (candidateProfiles.length === 0) {
+        return null;
+      }
+
+      return (
+        candidateProfiles.find((profile) => profile.id === activeProfileId) ||
+        candidateProfiles.find((profile) => profile.isActive) ||
+        candidateProfiles.find((profile) => profile.metrics.isHealthy) ||
+        candidateProfiles[0] ||
+        null
+      );
+    };
+
     // Select provider - only from profiles with required config
     let selectedProfile: EnhancedAIProfile | null = null;
     
     if (typeof profileIdOrContext === 'string') {
-      selectedProfile = this.settings.profiles.find(p => p.id === profileIdOrContext) || null;
+      selectedProfile = explicitlyPreferredProfile;
     } else {
-      // Filter to only viable profiles (those with API key and base URL)
-      const viableProfiles = this.settings.profiles.filter(p => {
-        if (p.providerType === 'local') {
-          return !!p.baseUrl?.trim();
-        }
-        return (p.apiKey?.trim() && p.baseUrl?.trim());
-      });
-
       if (viableProfiles.length === 0) {
         console.error('❌ No viable profiles found. All profiles are missing required configuration.');
         console.error('Saved profiles:', this.settings.profiles.map(p => ({
@@ -204,14 +268,23 @@ export class EnhancedAIService {
         };
       }
 
-      const activeViable = viableProfiles.find(p => p.id === this.settings.activeProfileId);
-      if (activeViable) {
-        selectedProfile = activeViable;
+      const preferredProfile = explicitlyPreferredProfile;
+      if (preferredProfile) {
+        selectedProfile = preferredProfile;
       } else {
         selectedProfile = ProviderSelector.selectProvider(
-          viableProfiles,
+          candidateProfiles,
           context,
-          this.settings.selectionStrategy
+          context.requiresJSON ? 'MostReliable' : this.settings.selectionStrategy
+        );
+      }
+    }
+
+    if (!selectedProfile) {
+      selectedProfile = pickFallbackProfile();
+      if (selectedProfile) {
+        console.warn(
+          `⚠️ Provider selector returned no match; falling back to "${selectedProfile.name}" from viable configured profiles.`,
         );
       }
     }
@@ -261,11 +334,15 @@ export class EnhancedAIService {
     }
 
     // Fallback if enabled and primary failed
-    if (this.settings.enableFallback) {
-      const fallbackChain = ProviderSelector.getFallbackChain(
-        this.settings.profiles.filter(p => p.id !== selectedProfile!.id),
-        context
-      );
+    if (this.settings.enableFallback && typeof profileIdOrContext !== 'string') {
+      const explicitFallbackChain = this.settings.fallbackProfileIds
+        .filter((profileId) => profileId !== selectedProfile.id)
+        .map((profileId) => candidateProfiles.find((profile) => profile.id === profileId) || null)
+        .filter((profile): profile is EnhancedAIProfile => !!profile);
+      const fallbackChain =
+        explicitFallbackChain.length > 0
+          ? explicitFallbackChain
+          : [];
 
       for (const fallbackProfile of fallbackChain) {
         try {
@@ -285,7 +362,18 @@ export class EnhancedAIService {
       }
     }
 
-    const errorMsg = `All providers failed. Primary provider "${selectedProfile.name}" error: ${primaryError}. Check your API key, base URL, and provider type match your actual API service.`;
+    const isRateLimitedOrOverloaded = /api error 429|rate-limited|rate limited|overloaded|temporarily unavailable/i.test(
+      primaryError,
+    );
+    const isMissingAuth = /api error 401|missing authentication header|api key is missing or empty/i.test(primaryError);
+
+    const troubleshootingHint = isRateLimitedOrOverloaded
+      ? 'The selected provider is temporarily rate-limited or overloaded. Wait a few seconds and retry, or let fallback use another configured profile.'
+      : isMissingAuth
+        ? 'Please check that this profile has a valid API key, base URL, and provider type.'
+        : 'Check your API key, base URL, and provider type match your actual API service.';
+
+    const errorMsg = `All providers failed. Primary provider "${selectedProfile.name}" error: ${primaryError}. ${troubleshootingHint}`;
     console.error(`\n🛑 ${errorMsg}\n`);
     
     return {
@@ -453,6 +541,15 @@ export class EnhancedAIService {
    * Get or create adapter for a profile
    */
   private getAdapter(profile: EnhancedAIProfile): AIProviderAdapter | null {
+    const signature = this.getProfileSignature(profile);
+    const cachedSignature = this.adapterSignatures.get(profile.id);
+
+    // Recreate cached adapter when connection settings changed.
+    if (this.adapters.has(profile.id) && cachedSignature !== signature) {
+      this.adapters.delete(profile.id);
+      this.adapterSignatures.delete(profile.id);
+    }
+
     if (!this.adapters.has(profile.id)) {
       try {
         // Validate profile before creating adapter
@@ -472,12 +569,39 @@ export class EnhancedAIService {
         const adapter = ProviderFactory.createAdapter(profile);
         console.log(`✓ Adapter created successfully for ${profile.name}`);
         this.adapters.set(profile.id, adapter);
+        this.adapterSignatures.set(profile.id, signature);
       } catch (error) {
         console.error(`❌ Failed to create adapter for ${profile.name}:`, error);
         return null;
       }
     }
     return this.adapters.get(profile.id) || null;
+  }
+
+  private getProfileSignature(profile: EnhancedAIProfile): string {
+    return JSON.stringify({
+      providerType: profile.providerType,
+      apiKey: (profile.apiKey || '').trim(),
+      baseUrl: (profile.baseUrl || '').trim(),
+      modelName: (profile.modelName || '').trim(),
+      organizationId: profile.organizationId || '',
+      customHeaders: profile.customHeaders || {},
+      capabilities: {
+        supportsJSON: profile.capabilities.supportsJSON,
+        maxTokens: profile.capabilities.maxTokens,
+        contextWindow: profile.capabilities.contextWindow,
+      },
+      openRouterModelInfo: profile.openRouterModelInfo
+        ? {
+            preferredStructuredFormat: profile.openRouterModelInfo.preferredStructuredFormat,
+            supportsResponseFormat: profile.openRouterModelInfo.supportsResponseFormat,
+            isFreeTier: profile.openRouterModelInfo.isFreeTier,
+            isReasoningModel: profile.openRouterModelInfo.isReasoningModel,
+            recommendedMaxTokens: profile.openRouterModelInfo.recommendedMaxTokens,
+            updatedAt: profile.openRouterModelInfo.updatedAt,
+          }
+        : null,
+    });
   }
 
   /**
@@ -521,6 +645,11 @@ export class EnhancedAIService {
    */
   setFallbackEnabled(enabled: boolean): void {
     this.settings.enableFallback = enabled;
+    this.saveSettings(this.settings);
+  }
+
+  setFallbackProfiles(profileIds: string[]): void {
+    this.settings.fallbackProfileIds = profileIds;
     this.saveSettings(this.settings);
   }
 }

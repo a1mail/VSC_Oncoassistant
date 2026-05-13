@@ -1,0 +1,13 @@
+Provider - Openrouter - for all models 
+API for all models: sk-or-v1-
+d299b223d2c6dc10b8fac99d92b4a21150d1f2715db17f3e21f017dc5e0fbc38
+base_url for all models: https://openrouter.ai/api/v1
+
+Models: 
+tencent/hy3-preview:free
+google/gemma-4-31b-it:free
+nvidia/nemotron-3-super-120b-a12b:free
+minimax/minimax-m2.5:free
+qwen/qwen3-next-80b-a3b-instruct:free
+z-ai/glm-4.5-air:free
+

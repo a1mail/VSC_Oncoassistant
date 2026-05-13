@@ -51,7 +51,7 @@ if (!process.env.APP_PASSWORD) {
 // Rate limiting
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000'),
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100'),
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '10000'), // Increased from 100 to 10000 to prevent local block
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
@@ -59,7 +59,7 @@ const limiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 попыток
+  max: 500, // Increased from 5 to 500
   message: 'Too many login attempts, please try again after 15 minutes',
   skipSuccessfulRequests: true,
 });
@@ -272,8 +272,8 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  // Rate limiting
-  app.use(limiter);
+  // Rate limiting - ONLY for API routes
+  app.use('/api', limiter);
 
   // Logging
   app.use(loggingMiddleware);
@@ -912,16 +912,22 @@ async function startServer() {
   const distPath = path.resolve(__dirname, 'dist');
   const distIndexPath = path.join(distPath, 'index.html');
   const hasDist = fs.existsSync(distIndexPath);
-  const useDist = process.env.NODE_ENV === 'production' || hasDist;
+  const useDist = process.env.NODE_ENV === 'production';
 
   if (!useDist) {
-    const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
-    app.use(vite.middlewares);
+    // In dev mode, we no longer start Vite through Express.
+    // Vite runs on its own port (5173) and Express runs on 3000 as a pure API.
+    app.get('/', (req, res) => {
+      res.send(`
+        <h1>OncoAssistant API Server Running</h1>
+        <p>In development mode, please open the Vite server instead: <a href="http://localhost:5173">http://localhost:5173</a></p>
+      `);
+    });
   } else {
     if (hasDist) {
       // Перенаправление с корня на /app-registry/ ДО express.static
       app.get('/', (req, res) => {
-        res.redirect(302, '/app-registry/');
+        res.sendFile(distIndexPath);
       });
 
       app.use(express.static(distPath));

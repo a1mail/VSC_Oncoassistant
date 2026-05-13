@@ -26,6 +26,26 @@ export interface ProviderCapabilities {
   contextWindow: number;
 }
 
+export interface OpenRouterModelInfo {
+  modelId: string;
+  canonicalSlug?: string;
+  isFreeTier: boolean;
+  supportsResponseFormat: boolean;
+  supportsStructuredOutputs: boolean;
+  supportsReasoning: boolean;
+  supportsIncludeReasoning: boolean;
+  isReasoningModel: boolean;
+  maxCompletionTokens?: number;
+  contextLength?: number;
+  preferredStructuredFormat: 'json' | 'xml';
+  recommendedMaxTokens: number;
+  pricing?: {
+    prompt?: string;
+    completion?: string;
+  };
+  updatedAt: string;
+}
+
 // Performance metrics for provider selection
 export interface ProviderMetrics {
   lastResponseTime?: number;
@@ -54,6 +74,7 @@ export interface EnhancedAIProfile {
   organizationId?: string;  // For OpenAI
   region?: string;  // For cloud providers
   customHeaders?: Record<string, string>;
+  openRouterModelInfo?: OpenRouterModelInfo;
   
   // Performance & Tracking
   metrics: ProviderMetrics;
@@ -76,6 +97,7 @@ export interface RequestContext {
   requiresJSON?: boolean;
   estimatedTokens?: number;
   priority?: 'cost' | 'speed' | 'quality' | 'reliability';
+  preferredProfileId?: string;
   timestamp: Date;
 }
 
@@ -105,6 +127,7 @@ export interface EnhancedAISettings {
   profiles: EnhancedAIProfile[];
   activeProfileId: string;
   enableFallback: boolean;
+  fallbackProfileIds: string[];
   selectionStrategy: 'FastestFirst' | 'CheapestFirst' | 'MostReliable' | 'RoundRobin';
   autoHealthCheck: boolean;
   healthCheckInterval: number;  // minutes

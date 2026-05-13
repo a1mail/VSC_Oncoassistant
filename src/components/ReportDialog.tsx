@@ -2,6 +2,7 @@ import React from 'react';
 import { Button } from '@/components/ui/button';
 import { useConsultation } from '@/context/ConsultationContext';
 import { Copy, Printer, X } from 'lucide-react';
+import { normalizePrescriptions, toPrescriptionText } from '@/lib/prescriptions';
 
 interface ReportDialogProps {
   isOpen: boolean;
@@ -215,59 +216,6 @@ const appendExamSection = (parts: string[], exam: any) => {
   parts.push('3. Объективный осмотр', ...lines, '');
 };
 
-type NormalizedPrescription = { type: string; name: string; details: string };
-
-const normalizePrescriptionItem = (item: any): NormalizedPrescription | null => {
-  if (typeof item === 'string') {
-    const text = item.trim();
-    if (!text) return null;
-    return { type: 'Препарат', name: text, details: text };
-  }
-  if (!item || typeof item !== 'object') return null;
-
-  const type = toText(item.type || item.category || item.kind || item.classification) || 'Препарат';
-  const name = toText(item.name || item.drug || item.medication || item.medicine || item.title) || 'Без названия';
-  const detailsParts = [
-    toText(item.details || item.instructions),
-    toText(item.dose || item.dosage),
-    toText(item.route),
-    toText(item.frequency),
-    toText(item.day),
-    toText(item.duration),
-    toText(item.regimen),
-    toText(item.note || item.notes),
-  ].filter(Boolean);
-  const details = detailsParts.join('; ') || name;
-  return { type, name, details };
-};
-
-const normalizePrescriptions = (value: unknown): NormalizedPrescription[] => {
-  if (Array.isArray(value)) {
-    return value.map(normalizePrescriptionItem).filter((item): item is NormalizedPrescription => !!item);
-  }
-  if (typeof value === 'string') {
-    return value
-      .split(/\r?\n|;/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => ({ type: 'Препарат', name: line, details: line }));
-  }
-  if (value && typeof value === 'object') {
-    return Object.entries(value as Record<string, unknown>)
-      .map(([name, details]) => {
-        const detailsText = toText(details);
-        if (!name.trim() && !detailsText) return null;
-        return {
-          type: 'Препарат',
-          name: name.trim() || 'Без названия',
-          details: detailsText || name.trim(),
-        };
-      })
-      .filter((item): item is NormalizedPrescription => !!item);
-  }
-  return [];
-};
-
 const appendTreatmentSection = (parts: string[], treatment: any) => {
   if (!treatment || typeof treatment !== 'object') return;
   const lines: string[] = [];
@@ -284,10 +232,10 @@ const appendTreatmentSection = (parts: string[], treatment: any) => {
 
   const recommendationItems: unknown[] = Array.isArray(treatment.recommendations)
     ? (treatment.recommendations as unknown[])
-    : toText(treatment.recommendations)
+    : toPrescriptionText(treatment.recommendations)
       ? [treatment.recommendations as unknown]
       : [];
-  const recommendations: string[] = recommendationItems.map(toText).filter((x) => Boolean(x));
+  const recommendations: string[] = recommendationItems.map(toPrescriptionText).filter((x) => Boolean(x));
   if (recommendations.length > 0) {
     lines.push('Рекомендации:');
     recommendations.forEach((item) => lines.push(`- ${item}`));
@@ -295,10 +243,10 @@ const appendTreatmentSection = (parts: string[], treatment: any) => {
 
   const warningItems: unknown[] = Array.isArray(treatment.warnings)
     ? (treatment.warnings as unknown[])
-    : toText(treatment.warnings)
+    : toPrescriptionText(treatment.warnings)
       ? [treatment.warnings as unknown]
       : [];
-  const warnings: string[] = warningItems.map(toText).filter((x) => Boolean(x));
+  const warnings: string[] = warningItems.map(toPrescriptionText).filter((x) => Boolean(x));
   if (warnings.length > 0) {
     lines.push('Клинические предостережения:');
     warnings.forEach((item) => lines.push(`- ${item}`));
