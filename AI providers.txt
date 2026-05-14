@@ -1,6 +1,6 @@
 Provider - Openrouter - for all models 
 API for all models: sk-or-v1-
-d299b223d2c6dc10b8fac99d92b4a21150d1f2715db17f3e21f017dc5e0fbc38
+
 base_url for all models: https://openrouter.ai/api/v1
 
 Models: 
