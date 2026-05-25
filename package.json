@@ -10,6 +10,7 @@
     "start": "tsx server.ts",
     "start:prod": "tsx start-prod.ts",
     "build": "tsc -b && vite build",
+    "build:standalone": "tsc -b && vite build --outDir dist-standalone",
     "lint": "eslint .",
     "lint:strict": "eslint . --max-warnings=0",
     "preview": "vite preview",

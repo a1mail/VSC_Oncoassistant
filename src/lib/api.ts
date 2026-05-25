@@ -53,7 +53,7 @@ function writeLocalMirror(
 
 /**
  * Reads the active patient storage snapshot.
- * In `Diagassist_4.html` it prefers the selected portable JSON database.
+ * In the standalone HTML build it prefers the selected portable JSON database.
  */
 async function getStorageSnapshot(): Promise<{
   patients: Patient[];

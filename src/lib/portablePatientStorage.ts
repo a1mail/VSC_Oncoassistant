@@ -1,5 +1,9 @@
 const PORTABLE_DATABASE_FILENAME = 'oncoassistant-patient-db.json';
 
+function isStandaloneVariantPath(pathname: string): boolean {
+  return /diagassist_[45]\.html?$/.test(pathname.toLowerCase());
+}
+
 export interface PortablePatientRecord {
   id?: number;
   full_name: string;
@@ -83,9 +87,8 @@ export function isDiagassist4Variant(): boolean {
     return false;
   }
 
-  return window.location.pathname.toLowerCase().endsWith('/diagassist_4.html')
-    || window.location.pathname.toLowerCase().endsWith('\\diagassist_4.html')
-    || window.location.pathname.toLowerCase().endsWith('diagassist_4.html');
+  return window.location.protocol === 'file:'
+    || isStandaloneVariantPath(window.location.pathname);
 }
 
 export function isPortablePatientStorageSupported(): boolean {
@@ -142,7 +145,7 @@ async function ensureDirectoryPermission(
 
 /**
  * Requests a target folder for the portable patient database.
- * This runs only in the standalone `Diagassist_4.html` variant.
+ * This runs only in the standalone HTML variant (`Diagassist_4.html` / `Diagassist_5.html`).
  */
 export async function choosePortablePatientStorageDirectory(): Promise<PortablePatientStorageState> {
   if (!isDiagassist4Variant()) {
