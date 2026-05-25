@@ -1,5 +1,5 @@
 import { SavedProviderProfile } from '@/lib/providers/profileService';
-import { ProviderFactory } from '@/lib/providers';
+import { ProviderFactory } from '@/lib/providers/factory';
 
 const PROVIDER_LABELS: Record<string, string> = {
   gemini: 'Google Gemini',
@@ -77,8 +77,77 @@ const splitListValue = (value: string): string[] =>
 const isLikelyUrl = (value: string): boolean =>
   /^https?:\/\//i.test(value) || /^http:\/\/localhost/i.test(value);
 
+const isLikelyApiEndpoint = (value: string): boolean => {
+  const url = value.toLowerCase();
+  return (
+    url.includes('/api') ||
+    /\/v\d+\b/.test(url) ||
+    url.includes('localhost') ||
+    url.includes('openrouter.ai') ||
+    url.includes('googleapis.com') ||
+    url.includes('generativelanguage.googleapis.com')
+  );
+};
+
 const isLikelyApiKey = (value: string): boolean =>
-  /^(sk-|sk_or_|skorv1-|sk-or-v1-|AIza|gsk_|sess-|token-)/i.test(value) || value.length > 20;
+  /^(sk-|sk_or_|skorv1-|sk-or-v1-|AIza|gsk_|sess-|token-)/i.test(value) || /[A-Za-z0-9][A-Za-z0-9_-]{23,}/.test(value);
+
+const looksLikeModelIdentifier = (value: string): boolean => {
+  const candidate = stripWrappingQuotes(value);
+  if (!candidate || isLikelyUrl(candidate)) return false;
+  if (candidate.includes(' ')) return false;
+  if (/^[\w.-]+\/[\w.:+-]+$/i.test(candidate)) return true;
+  if (/^[A-Za-z0-9._:-]{4,}$/.test(candidate) && /[A-Za-z]/.test(candidate) && /[0-9:/_-]/.test(candidate)) {
+    return true;
+  }
+  return /^(gemini|gpt|claude|deepseek|qwen|llama|mistral|nemotron|glm|mixtral|yi|o\d)/i.test(candidate);
+};
+
+const providerAliasEntries = Object.entries(PROVIDER_TYPE_ALIASES).sort((a, b) => b[0].length - a[0].length);
+
+const detectProviderTypeHint = (value?: string): SavedProviderProfile['type'] | undefined => {
+  if (!value) return undefined;
+  const normalized = normalizeImportKey(value);
+  if (normalized && PROVIDER_TYPE_ALIASES[normalized]) {
+    return PROVIDER_TYPE_ALIASES[normalized];
+  }
+
+  const compact = value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  for (const [alias, providerType] of providerAliasEntries) {
+    if (compact.includes(alias)) {
+      return providerType;
+    }
+  }
+
+  return undefined;
+};
+
+const inferFieldByKeyContext = (
+  rawKey: string,
+): 'name' | 'model' | 'provider' | 'baseUrl' | 'apiKey' | null => {
+  const normalized = normalizeImportKey(rawKey);
+  if (!normalized) return null;
+
+  const hasAny = (...tokens: string[]) => tokens.some((token) => normalized.includes(token));
+
+  if (hasAny('apikey', 'apitoken', 'token', 'secret', 'auth', 'bearer', 'credential', 'accesskey', 'key')) {
+    return 'apiKey';
+  }
+  if (hasAny('baseurl', 'apiurl', 'endpoint', 'host', 'server', 'url')) {
+    return 'baseUrl';
+  }
+  if (hasAny('providertype', 'provider', 'vendor', 'service', 'gateway', 'aggregator', 'platform')) {
+    return 'provider';
+  }
+  if (hasAny('modelname', 'modelid', 'engine', 'llm', 'model')) {
+    return 'model';
+  }
+  if (hasAny('profilename', 'profile', 'name', 'title')) {
+    return 'name';
+  }
+
+  return null;
+};
 
 const getStringValue = (value: unknown): string | undefined => {
   if (typeof value !== 'string') return undefined;
@@ -101,9 +170,9 @@ const getStringArray = (value: unknown): string[] => {
 };
 
 const normalizeProviderType = (value?: string, baseUrl?: string, modelName?: string): SavedProviderProfile['type'] => {
-  const normalizedValue = normalizeImportKey(value || '');
-  if (normalizedValue && PROVIDER_TYPE_ALIASES[normalizedValue]) {
-    return PROVIDER_TYPE_ALIASES[normalizedValue];
+  const explicitProvider = detectProviderTypeHint(value);
+  if (explicitProvider) {
+    return explicitProvider;
   }
 
   const url = (baseUrl || '').toLowerCase();
@@ -119,9 +188,13 @@ const normalizeProviderType = (value?: string, baseUrl?: string, modelName?: str
 
   const model = (modelName || '').toLowerCase();
   if (model.startsWith('gemini')) return 'gemini';
+  if (model.startsWith('gpt') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4')) {
+    return 'openai_compatible';
+  }
   if (model.startsWith('claude')) return 'anthropic';
   if (model.startsWith('deepseek')) return 'deepseek';
   if (model.startsWith('qwen')) return 'qwen';
+  if (model.startsWith('grok')) return 'openai_compatible';
 
   return 'openai_compatible';
 };
@@ -132,26 +205,44 @@ const assignParsedValue = (
   target: ParsedImportFields,
   index?: number,
 ) => {
-  if (field in target.shared) {
+  const collectionBySharedField: Record<keyof ParsedImportFields['shared'], keyof Omit<ParsedImportFields, 'shared'>> = {
+    name: 'names',
+    model: 'models',
+    provider: 'providers',
+    baseUrl: 'baseUrls',
+    apiKey: 'apiKeys',
+  };
+
+  if ((field as string) in collectionBySharedField) {
+    const sharedField = field as keyof ParsedImportFields['shared'];
+    const collectionField = collectionBySharedField[sharedField];
+    const collection = target[collectionField];
+
     if (typeof index === 'number') {
-      const collection = target[field as keyof Omit<ParsedImportFields, 'shared'>];
-      if (Array.isArray(collection) && values[0]) {
+      if (values[0]) {
         collection[index] = values[0];
       }
       return;
     }
 
     if (values.length > 1) {
-      const collection = target[field as keyof Omit<ParsedImportFields, 'shared'>];
-      if (Array.isArray(collection)) {
-        values.forEach((value, idx) => {
-          collection[idx] = value;
-        });
-      }
+      values.forEach((value, idx) => {
+        collection[idx] = value;
+      });
       return;
     }
 
-    target.shared[field as keyof ParsedImportFields['shared']] = values[0];
+    if (values[0]) {
+      target.shared[sharedField] = values[0];
+    }
+    return;
+  }
+
+  const collection = target[field as keyof Omit<ParsedImportFields, 'shared'>];
+  if (Array.isArray(collection)) {
+    values.forEach((value, idx) => {
+      collection[typeof index === 'number' ? index + idx : idx] = value;
+    });
   }
 };
 
@@ -163,6 +254,9 @@ const parseTextImport = (content: string): ParsedImportFields => {
 
   const isStructuredImportKey = (value: string): boolean => {
     const normalized = normalizeImportKey(value);
+    if (inferFieldByKeyContext(value)) {
+      return true;
+    }
     return [
       'name',
       'profilename',
@@ -196,6 +290,17 @@ const parseTextImport = (content: string): ParsedImportFields => {
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+    const cleanedLine = stripWrappingQuotes(line);
+    const providerHint = detectProviderTypeHint(cleanedLine);
+
+    if (
+      providerHint &&
+      !isLikelyUrl(cleanedLine) &&
+      !looksLikeModelIdentifier(cleanedLine) &&
+      !parsed.shared.provider
+    ) {
+      parsed.shared.provider = providerHint;
+    }
 
     const providerDashMatch = line.match(/^provider\s*-\s*(.+?)(?:\s*-\s*for\s+all\s+models)?$/i);
     if (providerDashMatch) {
@@ -221,7 +326,7 @@ const parseTextImport = (content: string): ParsedImportFields => {
       continue;
     }
 
-    const keyValueMatch = line.match(/^([^:=]+)\s*[:=]\s*(.+)$/);
+    const keyValueMatch = line.match(/^([^:=]+)\s*[:=]\s*(.*)$/);
     const keyOnlyMatch = line.match(/^([^:=]+)\s*[:=]\s*$/);
 
     if (pendingListField === 'models') {
@@ -230,80 +335,126 @@ const parseTextImport = (content: string): ParsedImportFields => {
         (!!keyValueMatch && isStructuredImportKey(keyValueMatch[1]));
 
       if (!looksLikeNewSection) {
-        parsed.models.push(stripWrappingQuotes(line));
-        continue;
+        if (looksLikeModelIdentifier(cleanedLine) || cleanedLine.includes('/')) {
+          parsed.models.push(cleanedLine);
+          continue;
+        }
       }
     }
 
     if (!keyValueMatch) {
       if (keyOnlyMatch) {
+        const inferredField = inferFieldByKeyContext(keyOnlyMatch[1]);
         const normalizedKey = normalizeImportKey(keyOnlyMatch[1]);
-        if (['model', 'modelname', 'models'].includes(normalizedKey)) {
+        if (inferredField === 'model' || ['model', 'modelname', 'models'].includes(normalizedKey)) {
           pendingListField = 'models';
           pendingScalarField = null;
           continue;
         }
+        if (inferredField === 'apiKey') {
+          pendingScalarField = 'apiKey';
+          pendingListField = null;
+          continue;
+        }
       }
 
-      if (pendingListField === 'models') {
-        parsed.models.push(stripWrappingQuotes(line));
+      if (pendingListField === 'models' && looksLikeModelIdentifier(cleanedLine)) {
+        parsed.models.push(cleanedLine);
         continue;
       }
 
       if (pendingScalarField === 'apiKey' && parsed.shared.apiKey && !line.includes(':') && !line.includes('=')) {
-        parsed.shared.apiKey = `${parsed.shared.apiKey}${stripWrappingQuotes(line)}`;
+        parsed.shared.apiKey = `${parsed.shared.apiKey}${cleanedLine}`;
         continue;
       }
 
-      if (!parsed.shared.baseUrl && isLikelyUrl(line)) {
-        parsed.shared.baseUrl = stripWrappingQuotes(line);
-      } else if (!parsed.shared.apiKey && isLikelyApiKey(line)) {
-        parsed.shared.apiKey = stripWrappingQuotes(line);
+      if (isLikelyUrl(cleanedLine) && !parsed.shared.baseUrl && (isLikelyApiEndpoint(cleanedLine) || pendingScalarField === 'baseUrl')) {
+        parsed.shared.baseUrl = cleanedLine;
+        continue;
+      }
+
+      if (isLikelyApiKey(cleanedLine) && !parsed.shared.apiKey) {
+        parsed.shared.apiKey = cleanedLine;
+        continue;
+      }
+
+      if (!parsed.shared.model && looksLikeModelIdentifier(cleanedLine)) {
+        parsed.models.push(cleanedLine);
+        continue;
+      }
+
+      if (providerHint && !parsed.shared.provider) {
+        parsed.shared.provider = providerHint;
       }
       continue;
     }
 
     const [, rawKey, rawValue] = keyValueMatch;
     const normalizedKey = normalizeImportKey(rawKey);
+    const inferredField = inferFieldByKeyContext(rawKey);
     const values = splitListValue(rawValue);
-    if (values.length === 0) continue;
-
-    const indexedMatch = normalizedKey.match(/^(name|profilename|profile|modelname|model|providertype|provider|type|baseurl|apiurl|url|endpoint|apikey|apitoken|token|key|secret)(\d+)$/);
+    const indexedMatch = normalizedKey.match(
+      /^(name|profilename|profile|modelname|model|providertype|provider|type|baseurl|apiurl|url|endpoint|apikey|apitoken|token|key|secret)(\d+)$/,
+    );
     const index = indexedMatch ? Number(indexedMatch[2]) - 1 : undefined;
     const baseKey = indexedMatch ? indexedMatch[1] : normalizedKey;
+    const resolvedField =
+      (['name', 'profilename', 'profile'].includes(baseKey) && 'name') ||
+      (['model', 'modelname', 'models'].includes(baseKey) && 'model') ||
+      (['providertype', 'provider', 'type', 'providers', 'providerforallmodels', 'providersforallmodels'].includes(baseKey) &&
+        'provider') ||
+      (['baseurl', 'apiurl', 'url', 'endpoint', 'urls', 'baseurlforallmodels', 'urlforallmodels', 'apiurlforallmodels'].includes(baseKey) &&
+        'baseUrl') ||
+      (['apikey', 'apitoken', 'token', 'key', 'secret', 'keys', 'apiforallmodels', 'apikeyforallmodels', 'tokenforallmodels', 'keyforallmodels', 'secretforallmodels'].includes(baseKey) &&
+        'apiKey') ||
+      inferredField;
 
-    if (['name', 'profilename', 'profile'].includes(baseKey)) {
+    if (resolvedField === 'model' && values.length === 0) {
+      pendingListField = 'models';
+      pendingScalarField = null;
+      continue;
+    }
+
+    if (resolvedField === 'apiKey' && values.length === 0) {
+      pendingScalarField = 'apiKey';
+      pendingListField = null;
+      continue;
+    }
+
+    if (resolvedField === 'name' && values.length > 0) {
       assignParsedValue('name', values, parsed, index);
       pendingScalarField = 'name';
       pendingListField = null;
-    } else if (['model', 'modelname', 'models'].includes(baseKey)) {
+    } else if (resolvedField === 'model' && values.length > 0) {
       assignParsedValue('model', values, parsed, index);
-      pendingListField = values.length === 0 ? 'models' : null;
+      pendingListField = null;
       pendingScalarField = null;
-    } else if (['providertype', 'provider', 'type', 'providers'].includes(baseKey)) {
+    } else if (resolvedField === 'provider' && values.length > 0) {
       assignParsedValue('provider', values, parsed, index);
       pendingScalarField = 'provider';
       pendingListField = null;
-    } else if (['providerforallmodels', 'providersforallmodels'].includes(baseKey)) {
-      assignParsedValue('provider', values, parsed, index);
-      pendingScalarField = 'provider';
-      pendingListField = null;
-    } else if (['baseurl', 'apiurl', 'url', 'endpoint', 'urls'].includes(baseKey)) {
+    } else if (resolvedField === 'baseUrl' && values.length > 0) {
       assignParsedValue('baseUrl', values, parsed, index);
       pendingScalarField = 'baseUrl';
       pendingListField = null;
-    } else if (['baseurlforallmodels', 'urlforallmodels', 'apiurlforallmodels'].includes(baseKey)) {
-      assignParsedValue('baseUrl', values, parsed, index);
-      pendingScalarField = 'baseUrl';
-      pendingListField = null;
-    } else if (['apikey', 'apitoken', 'token', 'key', 'secret', 'keys'].includes(baseKey)) {
+    } else if (resolvedField === 'apiKey' && values.length > 0) {
       assignParsedValue('apiKey', values, parsed, index);
       pendingScalarField = 'apiKey';
       pendingListField = null;
-    } else if (['apiforallmodels', 'apikeyforallmodels', 'tokenforallmodels', 'keyforallmodels', 'secretforallmodels'].includes(baseKey)) {
-      assignParsedValue('apiKey', values, parsed, index);
-      pendingScalarField = 'apiKey';
-      pendingListField = null;
+    } else if (values.length > 0) {
+      const firstValue = values[0];
+      if (!parsed.shared.baseUrl && isLikelyUrl(firstValue) && (isLikelyApiEndpoint(firstValue) || inferredField === 'baseUrl')) {
+        parsed.shared.baseUrl = firstValue;
+      } else if (!parsed.shared.apiKey && isLikelyApiKey(firstValue)) {
+        parsed.shared.apiKey = firstValue;
+      } else if (!parsed.shared.model && looksLikeModelIdentifier(firstValue)) {
+        parsed.models.push(firstValue);
+      } else {
+        const keyProviderHint = detectProviderTypeHint(`${rawKey} ${rawValue}`);
+        if (keyProviderHint && !parsed.shared.provider) {
+          parsed.shared.provider = keyProviderHint;
+        }
+      }
     }
   }
 
@@ -342,6 +493,51 @@ const parseObjectImport = (input: Record<string, unknown>): ParsedImportFields =
   assignSharedFromAliases(['baseUrl', 'base_url', 'url', 'apiUrl', 'endpoint', 'urls'], 'baseUrl', 'baseUrls');
   assignSharedFromAliases(['apiKey', 'api_key', 'key', 'token', 'apiToken', 'secret', 'keys'], 'apiKey', 'apiKeys');
 
+  for (const [rawKey, value] of Object.entries(input)) {
+    const inferredField = inferFieldByKeyContext(rawKey);
+    if (!inferredField) continue;
+
+    const asArray = getStringArray(value);
+    const asSingle = getStringValue(value);
+    if (asArray.length === 0 && !asSingle) continue;
+
+    if (inferredField === 'model') {
+      if (asArray.length > 1) {
+        parsed.models = asArray;
+      } else if (!parsed.shared.model) {
+        parsed.shared.model = asSingle || asArray[0];
+      }
+      continue;
+    }
+
+    if (inferredField === 'provider') {
+      if (asArray.length > 1) {
+        parsed.providers = asArray;
+      } else if (!parsed.shared.provider) {
+        parsed.shared.provider = asSingle || asArray[0];
+      }
+      continue;
+    }
+
+    if (inferredField === 'baseUrl') {
+      if (asArray.length > 1) {
+        parsed.baseUrls = asArray;
+      } else if (!parsed.shared.baseUrl) {
+        parsed.shared.baseUrl = asSingle || asArray[0];
+      }
+      continue;
+    }
+
+    if (inferredField === 'apiKey') {
+      if (asArray.length > 1) {
+        parsed.apiKeys = asArray;
+      } else if (!parsed.shared.apiKey) {
+        parsed.shared.apiKey = asSingle || asArray[0];
+      }
+      continue;
+    }
+  }
+
   return parsed;
 };
 
@@ -351,7 +547,7 @@ const buildImportedProfiles = (data: unknown): ImportedProfileData[] => {
   }
 
   if (!data || typeof data !== 'object') {
-    throw new Error('Файл не содержит данных профилей');
+    throw new Error('Import file does not contain provider profile data');
   }
 
   const record = data as Record<string, unknown>;
@@ -392,7 +588,7 @@ const buildImportedProfiles = (data: unknown): ImportedProfileData[] => {
       : (baseName || `${providerLabel} - ${modelName || 'imported'}`);
 
     if (!modelName) {
-      throw new Error('Не удалось определить название модели из импортируемого файла');
+      throw new Error('Failed to detect model name from imported data');
     }
 
     profiles.push({
@@ -411,7 +607,7 @@ const buildImportedProfiles = (data: unknown): ImportedProfileData[] => {
 const parseImportedProfiles = (content: string): ImportedProfileData[] => {
   const trimmed = content.trim();
   if (!trimmed) {
-    throw new Error('Файл пустой');
+    throw new Error('Import file is empty');
   }
 
   try {

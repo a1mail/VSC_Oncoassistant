@@ -5,10 +5,9 @@
  * Integrates with profileService for saved API profiles
  */
 
-import { enhancedAIService, EnhancedAIProfile, ProviderFactory } from '@/lib/providers';
+import { enhancedAIService, EnhancedAIProfile, ProviderFactory, RequestContext } from '@/lib/providers';
 import { removeEmptyFields } from '@/lib/utils/jsonUtils';
 import { normalizeApiKey } from '@/lib/utils/apiKeyUtils';
-import { isViableProfile } from '@/lib/utils/profileUtils';
 import { getCustomSystemPrompt, redactPatientPII, appendDocumentsToPrompt } from '@/lib/utils/promptHelpers';
 import { profileService, SavedProviderProfile } from '@/lib/providers/profileService';
 import type { ConsultationData, ConsultationDocument } from '@/lib/types/consultation';
@@ -148,14 +147,18 @@ function extractBalancedJson(text: string): string | null {
 }
 
 function repairJsonString(text: string): string {
-  return text
-    .replace(/,\s*([}\]])/g, '$1')
-    .replace(/[\u0000-\u001F]+/g, (match) => {
-      if (match === '\n' || match === '\t' || match === '\r') {
-        return match;
+  const withoutControlChars = [...text]
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      if (code === 9 || code === 10 || code === 13) {
+        return true;
       }
-      return '';
+      return code >= 32;
     })
+    .join('');
+
+  return withoutControlChars
+    .replace(/,\s*([}\]])/g, '$1')
     .trim();
 }
 
@@ -355,20 +358,30 @@ function getOpenRouterPreferredFormat(
 }
 
 function shouldUseXmlResponseFormat(profile: EnhancedAIProfile | null, schema: StructuredResponseSchema): boolean {
-  if (!profile || profile.providerType !== 'openrouter') {
+  if (!profile) {
     return false;
   }
 
-  const preferredFormat = getOpenRouterPreferredFormat(profile, schema);
-  if (preferredFormat) {
-    return preferredFormat === 'xml';
+  if (profile.providerType === 'openrouter') {
+    const preferredFormat = getOpenRouterPreferredFormat(profile, schema);
+    if (preferredFormat) {
+      return preferredFormat === 'xml';
+    }
+
+    if (schema === 'treatment') {
+      return true;
+    }
+
+    return profile.modelName.toLowerCase().includes(':free');
   }
 
-  if (schema === 'treatment') {
+  // Non-JSON-capable adapters are significantly more stable with strict XML,
+  // especially for treatment payloads that contain large lists.
+  if (schema === 'treatment' && !profile.capabilities.supportsJSON) {
     return true;
   }
 
-  return profile.modelName.toLowerCase().includes(':free');
+  return false;
 }
 
 function buildStrictXmlPrompt(prompt: string, schema: StructuredResponseSchema): string {
@@ -601,6 +614,126 @@ function parseAiXmlResponse(text: string, schema: StructuredResponseSchema): Rec
   };
 }
 
+function normalizeKeyToken(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '');
+}
+
+function readByAliases(record: Record<string, unknown>, aliases: string[]): unknown {
+  const wanted = aliases.map((alias) => normalizeKeyToken(alias));
+  for (const [key, value] of Object.entries(record)) {
+    const normalizedKey = normalizeKeyToken(key);
+    if (wanted.includes(normalizedKey)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function asText(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return '';
+}
+
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => asText(item)).map((item) => item.trim()).filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(/\r?\n|;/)
+      .map((line) => line.replace(/^\s*[-*•]\s*/, '').trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function isMeaningfulPrescriptionLine(line: string): boolean {
+  if (!line) return false;
+  if (line.length < 4) return false;
+  if (/^(рекоменд|наблюд|контроль|повтор|консультац)/i.test(line)) return false;
+  return /[a-zа-яё]/i.test(line);
+}
+
+function inferPrescriptionsFromText(...sources: unknown[]): string[] {
+  const merged = sources
+    .flatMap((source) => asStringArray(source))
+    .map((line) => line.trim())
+    .filter(isMeaningfulPrescriptionLine);
+  return [...new Set(merged)];
+}
+
+function normalizeTreatmentPayload(input: Record<string, unknown>): Record<string, unknown> {
+  const treatmentStrategy =
+    input.treatment_strategy ??
+    readByAliases(input, ['treatment_plan', 'plan', 'strategy', 'лечебнаястратегия', 'стратегиялечения']);
+  const primaryTreatment =
+    input.primary_treatment ??
+    readByAliases(input, ['main_treatment', 'primary_therapy', 'therapy', 'treatment', 'основноелечение']);
+  const regimen =
+    input.regimen ??
+    readByAliases(input, ['protocol', 'scheme', 'treatment_regimen', 'протокол', 'схема']);
+  let prescriptions =
+    input.prescriptions ??
+    readByAliases(input, [
+      'medications',
+      'drugs',
+      'orders',
+      'medication_list',
+      'drug_list',
+      'назначения',
+      'назначение',
+      'препараты',
+      'лекарства',
+      'лекарственныйплан',
+    ]);
+  const recommendations =
+    input.recommendations ??
+    readByAliases(input, ['follow_up', 'followup', 'next_steps', 'рекомендации', 'планнаблюдения']);
+  const warnings =
+    input.warnings ??
+    readByAliases(input, ['contraindications', 'interactions', 'risks', 'предупреждения', 'противопоказания']);
+  const crSource =
+    input.cr_source ??
+    readByAliases(input, ['source', 'guideline_source', 'reference', 'источник', 'клиническиерекомендации']);
+
+  const inferredPrescriptions = inferPrescriptionsFromText(prescriptions, regimen, primaryTreatment);
+  if (
+    (prescriptions === undefined ||
+      prescriptions === null ||
+      (Array.isArray(prescriptions) && prescriptions.length === 0) ||
+      (typeof prescriptions === 'string' && !prescriptions.trim())) &&
+    inferredPrescriptions.length > 0
+  ) {
+    prescriptions = inferredPrescriptions;
+  }
+
+  return {
+    ...input,
+    treatment_strategy: treatmentStrategy,
+    primary_treatment: primaryTreatment,
+    regimen,
+    prescriptions,
+    recommendations:
+      Array.isArray(recommendations) || typeof recommendations === 'string'
+        ? recommendations
+        : asStringArray(recommendations),
+    warnings:
+      Array.isArray(warnings) || typeof warnings === 'string'
+        ? warnings
+        : asStringArray(warnings),
+    cr_source: crSource,
+  };
+}
+
+function normalizeStructuredPayload(parsed: Record<string, unknown>, schema: StructuredResponseSchema): Record<string, unknown> {
+  if (schema !== 'treatment') {
+    return parsed;
+  }
+  return normalizeTreatmentPayload(parsed);
+}
+
 function buildStrictJsonPrompt(prompt: string): string {
   if (prompt.includes('STRICT OUTPUT RULES')) {
     return prompt;
@@ -794,27 +927,6 @@ function savedToEnhancedProfile(saved: SavedProviderProfile): EnhancedAIProfile 
     priority: template.priority || 5,
   };
 
-  // Validate required fields
-  if (!enhanced.modelName) {
-    throw new Error(`Profile "${saved.name}" is missing model name`);
-  }
-
-  // Validate provider-specific requirements
-  if (saved.type === 'local') {
-    // Local models don't require API key
-    if (!baseUrl) {
-      throw new Error(`Profile "${saved.name}" (Local) requires a base URL (e.g., http://localhost:11434)`);
-    }
-  } else {
-    // All other providers require API key
-    if (!apiKey) {
-      throw new Error(`Profile "${saved.name}" (${saved.type}) requires an API key`);
-    }
-    if (!baseUrl) {
-      throw new Error(`Profile "${saved.name}" (${saved.type}) requires a base URL`);
-    }
-  }
-
   return enhanced;
 }
 
@@ -832,25 +944,21 @@ async function refreshActiveOpenRouterProfileMetadata(): Promise<void> {
  */
 function syncProfilesFromService(): void {
   const savedProfiles = profileService.getAllProfiles();
+  const currentSettings = enhancedAIService.reloadSettings();
   
   console.log(`\n📋 Syncing profiles from profileService...`);
   console.log(`Found ${savedProfiles.length} saved profiles`);
   
   // Only sync if there are saved profiles
   if (savedProfiles.length === 0) {
-    console.warn('⚠️ No saved profiles found - will use default');
-    const currentSettings = enhancedAIService.getSettings();
-    if (!currentSettings.profiles.some(isViableProfile)) {
-      const envFallback = buildEnvFallbackProfile();
-      if (envFallback) {
-        enhancedAIService.saveSettings({
-          ...currentSettings,
-          profiles: [envFallback],
-          activeProfileId: envFallback.id,
-          fallbackProfileIds: [],
-        });
-      }
-    }
+    console.warn('⚠️ No saved profiles found - clearing runtime profiles');
+    const envFallback = buildEnvFallbackProfile();
+    enhancedAIService.saveSettings({
+      ...currentSettings,
+      profiles: envFallback ? [envFallback] : [],
+      activeProfileId: envFallback?.id || '',
+      fallbackProfileIds: [],
+    });
     return;
   }
 
@@ -880,18 +988,13 @@ function syncProfilesFromService(): void {
 
   if (convertedProfiles.length === 0) {
     console.error('❌ No profiles could be converted:', errors);
-    const currentSettings = enhancedAIService.getSettings();
-    if (!currentSettings.profiles.some(isViableProfile)) {
-      const envFallback = buildEnvFallbackProfile();
-      if (envFallback) {
-        enhancedAIService.saveSettings({
-          ...currentSettings,
-          profiles: [envFallback],
-          activeProfileId: envFallback.id,
-          fallbackProfileIds: [],
-        });
-      }
-    }
+    const envFallback = buildEnvFallbackProfile();
+    enhancedAIService.saveSettings({
+      ...currentSettings,
+      profiles: envFallback ? [envFallback] : [],
+      activeProfileId: envFallback?.id || '',
+      fallbackProfileIds: [],
+    });
     return;
   }
 
@@ -945,27 +1048,20 @@ function syncProfilesFromService(): void {
     isActive: profile.id === activeId,
   }));
 
-  // Update enhancedAIService ONLY with converted profiles
-  // Remove old default profiles that don't have valid config
-  const settings = enhancedAIService.getSettings();
-  if (!finalProfiles.some(isViableProfile)) {
-    const envFallback = buildEnvFallbackProfile();
-    if (envFallback) {
-      enhancedAIService.saveSettings({
-        ...settings,
-        profiles: [envFallback],
-        activeProfileId: envFallback.id,
-        fallbackProfileIds: [],
-      });
-    }
-    return;
-  }
+  // Update enhancedAIService with the exact profile list from storage.
+  // Invalid profiles are kept intentionally so the UI can show/edit them
+  // instead of silently reusing stale runtime providers.
+  const settings = enhancedAIService.reloadSettings();
+  const finalActiveId =
+    activeId && finalProfiles.some((profile) => profile.id === activeId)
+      ? activeId
+      : finalProfiles[0]?.id || '';
 
   try {
     enhancedAIService.saveSettings({
       ...settings,
       profiles: finalProfiles,
-      activeProfileId: activeId!,
+      activeProfileId: finalActiveId,
     });
   } catch (error) {
     console.error('Failed to save synced profiles:', error);
@@ -1182,7 +1278,14 @@ Do not use Markdown, just raw JSON.
     return appendRawResponseRetryContext(prompt, section, rawResponse, options);
   },
 
-  executeRawPrompt: async (prompt: string, documents: ConsultationDocument[] = []) => {
+  executeRawPrompt: async (
+    prompt: string,
+    documents: ConsultationDocument[] = [],
+    options: {
+      allowInteractiveFallbackPrompt?: boolean;
+      onProviderAttempt?: RequestContext['onProviderAttempt'];
+    } = {},
+  ) => {
     try {
       await refreshActiveOpenRouterProfileMetadata();
 
@@ -1197,6 +1300,8 @@ Do not use Markdown, just raw JSON.
         requiresJSON: responseFormat === 'json',
         priority: 'reliability',
         preferredProfileId: activeProfile?.id,
+        allowInteractiveFallbackPrompt: options.allowInteractiveFallbackPrompt,
+        onProviderAttempt: options.onProviderAttempt,
         timestamp: new Date(),
       });
       
@@ -1214,7 +1319,8 @@ Do not use Markdown, just raw JSON.
           responseFormat === 'xml'
             ? parseAiXmlResponse(content, schema)
             : parseAiJsonResponse(content);
-        return attachAiDebugMetadata(annotateAbbreviations(parsed) as Record<string, unknown>, {
+        const normalizedParsed = normalizeStructuredPayload(parsed, schema);
+        return attachAiDebugMetadata(annotateAbbreviations(normalizedParsed) as Record<string, unknown>, {
           rawResponse: content,
           rawResponseFormat: responseFormat,
           rawProvider: response.provider,
@@ -1240,7 +1346,8 @@ Do not use Markdown, just raw JSON.
             responseFormat === 'xml'
               ? await repairInvalidXmlResponse(strictPrompt, content, schema)
               : await repairInvalidJsonResponse(strictPrompt, content);
-          return attachAiDebugMetadata(annotateAbbreviations(repaired) as Record<string, unknown>, debugMetadata);
+          const normalizedRepaired = normalizeStructuredPayload(repaired, schema);
+          return attachAiDebugMetadata(annotateAbbreviations(normalizedRepaired) as Record<string, unknown>, debugMetadata);
         } catch (repairError) {
           const repairMessage =
             repairError instanceof Error && repairError.message

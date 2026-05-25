@@ -70,6 +70,7 @@ export function DiagnosisPage() {
   };
 
   const handleConfirmAnalyze = (finalPrompt: string) => {
+    setRawDebugState(null);
     void startAiRequest('diagnosis', finalPrompt, data.documents || []).catch((error) => {
       console.error(error);
       const extractedRawDebugState = extractRawAiDebugState(error);

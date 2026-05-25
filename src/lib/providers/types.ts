@@ -98,6 +98,14 @@ export interface RequestContext {
   estimatedTokens?: number;
   priority?: 'cost' | 'speed' | 'quality' | 'reliability';
   preferredProfileId?: string;
+  allowInteractiveFallbackPrompt?: boolean;
+  onProviderAttempt?: (attempt: {
+    profileId: string;
+    profileName: string;
+    providerType: ProviderType;
+    modelName: string;
+    stage: 'primary' | 'fallback';
+  }) => void;
   timestamp: Date;
 }
 
@@ -132,5 +140,4 @@ export interface EnhancedAISettings {
   autoHealthCheck: boolean;
   healthCheckInterval: number;  // minutes
 }
-
 

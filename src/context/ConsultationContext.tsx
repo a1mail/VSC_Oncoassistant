@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
 import { aiService } from '@/lib/aiService';
+import { enhancedAIService } from '@/lib/providers';
 import type { ConsultationData, ConsultationDocument, AiDebugMetadata } from '@/lib/types/consultation';
 
 export type { ConsultationData, ConsultationDocument };
@@ -233,6 +234,10 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
       }
 
       const taskId = `${section}-${Date.now()}`;
+      const activeProfile = enhancedAIService.getActiveProfile();
+      const initialProviderLabel = activeProfile
+        ? `${activeProfile.name} (${activeProfile.modelName})`
+        : undefined;
       setActiveAiTask({
         id: taskId,
         section,
@@ -240,10 +245,26 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
         status: 'running',
         startedAt: new Date().toISOString(),
         isMinimized: false,
+        rawProvider: initialProviderLabel,
       });
 
       try {
-        const result = await aiService.executeRawPrompt(prompt, documents);
+        const result = await aiService.executeRawPrompt(prompt, documents, {
+          allowInteractiveFallbackPrompt: true,
+          onProviderAttempt: (attempt) => {
+            const attemptLabel = `${attempt.profileName} (${attempt.modelName})${attempt.stage === 'fallback' ? ' | fallback' : ''}`;
+            setActiveAiTask((prev) => {
+              if (!prev || prev.id !== taskId) {
+                return prev;
+              }
+
+              return {
+                ...prev,
+                rawProvider: attemptLabel,
+              };
+            });
+          },
+        });
         setSaveStatus('idle');
         setData((prev) => ({ ...prev, [section]: result }));
         clearRetryContext(section);
@@ -256,7 +277,7 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
             ...prev,
             status: 'success',
             rawResponse: result?.rawResponse,
-            rawProvider: result?.rawProvider,
+            rawProvider: result?.rawProvider || prev.rawProvider,
             rawResponseFormat: result?.rawResponseFormat,
             rawResponseTime: result?.rawResponseTime,
             wasRepaired: result?.wasRepaired,
@@ -276,7 +297,7 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
             status: 'error',
             errorMessage: err.message || 'Ошибка при обращении к ИИ',
             rawResponse: meta.rawResponse,
-            rawProvider: meta.rawProvider,
+            rawProvider: meta.rawProvider || prev.rawProvider,
             rawResponseFormat: meta.rawResponseFormat,
             rawResponseTime: meta.rawResponseTime,
             wasRepaired: meta.wasRepaired,

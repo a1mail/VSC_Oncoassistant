@@ -70,7 +70,7 @@ export function AiRequestPanel({
             AI-запрос: {sectionLabel}
           </div>
           <div className="mt-1 text-xs text-slate-500">
-            {task.rawProvider ? `Модель: ${task.rawProvider}` : 'Модель будет определена после ответа'}
+            {task.rawProvider ? `Провайдер/модель: ${task.rawProvider}` : 'Провайдер/модель определяется...'}
           </div>
         </div>
         <div className="flex items-center gap-1">

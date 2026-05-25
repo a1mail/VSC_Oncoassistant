@@ -131,8 +131,8 @@ export function PromptPreviewDialog({
     return (
       <div className="pointer-events-none fixed inset-0 z-50">
         <div
-          className="pointer-events-auto fixed rounded-2xl border border-slate-200 bg-white shadow-xl"
-          style={{ left: position.x, top: position.y, width: Math.min(windowWidth, 360) }}
+          className="pointer-events-auto fixed right-4 top-20 rounded-2xl border border-slate-200 bg-white shadow-xl"
+          style={{ width: Math.min(windowWidth, 360) }}
         >
           <div className="flex items-center justify-between gap-3 px-4 py-3">
             <div className="flex min-w-0 items-center gap-2">

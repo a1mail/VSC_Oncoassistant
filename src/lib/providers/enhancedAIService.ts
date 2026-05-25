@@ -104,6 +104,13 @@ export class EnhancedAIService {
   saveSettings(settings: EnhancedAISettings): void {
     this.settings = this.normalizeSettings(settings);
     localStorage.setItem('ai_settings_enhanced', JSON.stringify(this.settings));
+    this.clearStaleAdapters();
+  }
+
+  reloadSettings(): EnhancedAISettings {
+    this.settings = this.loadSettings();
+    this.clearStaleAdapters();
+    return this.settings;
   }
 
   private normalizeSettings(settings: Partial<EnhancedAISettings>): EnhancedAISettings {
@@ -130,6 +137,20 @@ export class EnhancedAIService {
     };
   }
 
+  private clearStaleAdapters(): void {
+    const validIds = new Set(this.settings.profiles.map((profile) => profile.id));
+    for (const profileId of this.adapters.keys()) {
+      if (!validIds.has(profileId)) {
+        this.adapters.delete(profileId);
+      }
+    }
+    for (const profileId of this.adapterSignatures.keys()) {
+      if (!validIds.has(profileId)) {
+        this.adapterSignatures.delete(profileId);
+      }
+    }
+  }
+
   /**
    * Get current settings
    */
@@ -149,6 +170,78 @@ export class EnhancedAIService {
    */
   getActiveProfile(): EnhancedAIProfile | null {
     return this.settings.profiles.find(p => p.id === this.settings.activeProfileId) || null;
+  }
+
+  private notifyProviderAttempt(
+    context: RequestContext,
+    profile: EnhancedAIProfile,
+    stage: 'primary' | 'fallback',
+  ): void {
+    if (!context.onProviderAttempt) {
+      return;
+    }
+
+    try {
+      context.onProviderAttempt({
+        profileId: profile.id,
+        profileName: profile.name,
+        providerType: profile.providerType,
+        modelName: profile.modelName,
+        stage,
+      });
+    } catch (error) {
+      console.warn('Provider attempt callback failed:', error);
+    }
+  }
+
+  private formatProviderLabel(profile: EnhancedAIProfile): string {
+    return `${profile.name} (${profile.modelName})`;
+  }
+
+  private askFallbackBehavior(
+    primaryProfile: EnhancedAIProfile,
+    fallbackChain: EnhancedAIProfile[],
+    primaryError: string,
+  ): { mode: 'none' | 'auto' | 'manual'; profile?: EnhancedAIProfile } {
+    if (typeof window === 'undefined' || fallbackChain.length === 0) {
+      return { mode: 'none' };
+    }
+
+    const compactError = (primaryError || 'Неизвестная ошибка').slice(0, 300);
+    const fallbackOptions = fallbackChain
+      .map((profile, index) => `${index + 1}. ${profile.name} (${profile.modelName})`)
+      .join('\n');
+
+    const chooseManually = window.confirm(
+      `Не удалось связаться с моделью "${primaryProfile.name}" (${primaryProfile.modelName}).\n\n` +
+        `Ошибка: ${compactError}\n\n` +
+        `Нажмите OK, чтобы выбрать резервный профиль вручную для этого запроса.\n` +
+        `Нажмите Отмена для других вариантов.`,
+    );
+
+    if (chooseManually) {
+      const manualChoice = window.prompt(
+        `Введите номер резервного профиля:\n\n${fallbackOptions}`,
+        '1',
+      );
+      if (!manualChoice) {
+        return { mode: 'none' };
+      }
+
+      const parsedIndex = Number.parseInt(manualChoice, 10);
+      if (!Number.isFinite(parsedIndex) || parsedIndex < 1 || parsedIndex > fallbackChain.length) {
+        window.alert('Неверный номер профиля. Запрос остановлен без автопереключения.');
+        return { mode: 'none' };
+      }
+
+      return { mode: 'manual', profile: fallbackChain[parsedIndex - 1] };
+    }
+
+    const allowAuto = window.confirm(
+      `Разрешить автоматически перебрать резервные профили для этого запроса?\n\n${fallbackOptions}`,
+    );
+
+    return allowAuto ? { mode: 'auto' } : { mode: 'none' };
   }
 
   /**
@@ -211,7 +304,7 @@ export class EnhancedAIService {
         });
 
     // Reload latest settings before selecting provider
-    this.settings = this.loadSettings();
+    this.reloadSettings();
 
     const viableProfiles = this.settings.profiles.filter(p => {
       if (p.providerType === 'local') {
@@ -306,7 +399,7 @@ export class EnhancedAIService {
       console.error(errorMsg);
       return {
         content: '',
-        provider: selectedProfile.name,
+        provider: this.formatProviderLabel(selectedProfile),
         responseTime: 0,
         isSuccessful: false,
         error: errorMsg,
@@ -314,9 +407,13 @@ export class EnhancedAIService {
     }
 
     try {
+      this.notifyProviderAttempt(context, selectedProfile, 'primary');
       const response = await adapter.generateContent(prompt, systemPrompt);
       if (response.isSuccessful) {
-        return response;
+        return {
+          ...response,
+          provider: this.formatProviderLabel(selectedProfile),
+        };
       }
       primaryError = response.error || 'Unknown error';
     } catch (error) {
@@ -326,25 +423,38 @@ export class EnhancedAIService {
     }
 
     // Fallback if enabled and primary failed
-    if (this.settings.enableFallback && typeof profileIdOrContext !== 'string') {
+    if (typeof profileIdOrContext !== 'string') {
       const explicitFallbackChain = this.settings.fallbackProfileIds
         .filter((profileId) => profileId !== selectedProfile.id)
         .map((profileId) => candidateProfiles.find((profile) => profile.id === profileId) || null)
         .filter((profile): profile is EnhancedAIProfile => !!profile);
-      const fallbackChain =
-        explicitFallbackChain.length > 0
-          ? explicitFallbackChain
-          : [];
+      const interactiveFallbackCandidates = candidateProfiles.filter((profile) => profile.id !== selectedProfile.id);
+
+      let fallbackChain: EnhancedAIProfile[] = [];
+      if (this.settings.enableFallback) {
+        fallbackChain = explicitFallbackChain;
+      } else if (context.allowInteractiveFallbackPrompt !== false && interactiveFallbackCandidates.length > 0) {
+        const decision = this.askFallbackBehavior(selectedProfile, interactiveFallbackCandidates, primaryError);
+        if (decision.mode === 'auto') {
+          fallbackChain = interactiveFallbackCandidates;
+        } else if (decision.mode === 'manual' && decision.profile) {
+          fallbackChain = [decision.profile];
+        }
+      }
 
       for (const fallbackProfile of fallbackChain) {
         try {
           console.log(`🔄 Trying fallback provider: ${fallbackProfile.name}`);
+          this.notifyProviderAttempt(context, fallbackProfile, 'fallback');
           const fallbackAdapter = this.getAdapter(fallbackProfile);
           if (fallbackAdapter) {
             const response = await fallbackAdapter.generateContent(prompt, systemPrompt);
             if (response.isSuccessful) {
               console.log(`✓ Fallback provider "${fallbackProfile.name}" succeeded`);
-              return response;
+              return {
+                ...response,
+                provider: this.formatProviderLabel(fallbackProfile),
+              };
             }
             console.error(`❌ Fallback provider "${fallbackProfile.name}" failed: ${response.error}`);
           }
@@ -370,7 +480,7 @@ export class EnhancedAIService {
     
     return {
       content: '',
-      provider: selectedProfile.name,
+      provider: this.formatProviderLabel(selectedProfile),
       responseTime: 0,
       isSuccessful: false,
       error: errorMsg,

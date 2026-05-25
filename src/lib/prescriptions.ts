@@ -4,6 +4,9 @@ export type NormalizedPrescription = {
   details: string;
 };
 
+const normalizeKeyToken = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '');
+
 export function toPrescriptionText(value: unknown): string {
   if (typeof value === 'string') return value.trim();
   if (typeof value === 'number') return String(value);
@@ -28,31 +31,56 @@ export function normalizePrescriptionItem(item: unknown): NormalizedPrescription
   if (!item || typeof item !== 'object') return null;
 
   const prescription = item as Record<string, unknown>;
+  const keyMap = new Map<string, unknown>(
+    Object.entries(prescription).map(([key, value]) => [normalizeKeyToken(key), value]),
+  );
+
+  const pickValue = (aliases: string[]): unknown => {
+    for (const alias of aliases) {
+      if (prescription[alias] !== undefined) {
+        return prescription[alias];
+      }
+      const normalizedAlias = normalizeKeyToken(alias);
+      if (keyMap.has(normalizedAlias)) {
+        return keyMap.get(normalizedAlias);
+      }
+    }
+    return undefined;
+  };
+
   const type =
     toPrescriptionText(
-      prescription.type || prescription.category || prescription.kind || prescription.classification,
+      pickValue(['type', 'category', 'kind', 'classification', 'тип', 'категория', 'класс']),
     ) || 'Препарат';
   const name =
     toPrescriptionText(
-      prescription.name ||
-        prescription.drug ||
-        prescription.medication ||
-        prescription.medicine ||
-        prescription.title,
+      pickValue([
+        'name',
+        'drug',
+        'medication',
+        'medicine',
+        'title',
+        'препарат',
+        'наименование',
+        'название',
+        'лекарство',
+        'мнн',
+        'international_nonproprietary_name',
+      ]),
     ) || 'Без названия';
 
   const detailFields = [
-    ['Показание', prescription.indication],
-    ['Дозировка', prescription.dosage || prescription.dose],
-    ['Форма', prescription.form],
-    ['Путь введения', prescription.route],
-    ['Кратность', prescription.frequency],
-    ['Длительность', prescription.duration],
-    ['Режим', prescription.regimen],
-    ['Инструкция', prescription.instructions || prescription.details],
-    ['Противопоказания', prescription.contraindications],
-    ['Предостережения', prescription.warnings || prescription.warning],
-    ['Примечание', prescription.note || prescription.notes],
+    ['Показание', pickValue(['indication', 'показание'])],
+    ['Дозировка', pickValue(['dosage', 'dose', 'доза', 'дозировка'])],
+    ['Форма', pickValue(['form', 'форма'])],
+    ['Путь введения', pickValue(['route', 'путьвведения'])],
+    ['Кратность', pickValue(['frequency', 'кратность'])],
+    ['Длительность', pickValue(['duration', 'длительность', 'курс'])],
+    ['Режим', pickValue(['regimen', 'scheme', 'protocol', 'режим', 'схема'])],
+    ['Инструкция', pickValue(['instructions', 'details', 'описание', 'инструкция'])],
+    ['Противопоказания', pickValue(['contraindications', 'противопоказания'])],
+    ['Предостережения', pickValue(['warnings', 'warning', 'предупреждения'])],
+    ['Примечание', pickValue(['note', 'notes', 'примечание'])],
   ] as const;
 
   const details = detailFields
@@ -86,6 +114,11 @@ export function normalizePrescriptions(value: unknown): NormalizedPrescription[]
   }
 
   if (value && typeof value === 'object') {
+    const single = normalizePrescriptionItem(value);
+    if (single && single.name !== 'Без названия') {
+      return [single];
+    }
+
     return Object.entries(value as Record<string, unknown>)
       .map(([name, details]) => {
         const normalizedName = name.trim() || 'Без названия';

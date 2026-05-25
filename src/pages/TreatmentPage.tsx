@@ -83,6 +83,7 @@ export function TreatmentPage() {
   };
 
   const handleConfirmGeneratePlan = (finalPrompt: string) => {
+    setRawDebugState(null);
     void startAiRequest('treatment', finalPrompt, data.documents || []).catch((error) => {
       console.error(error);
       const extractedRawDebugState = extractRawAiDebugState(error);

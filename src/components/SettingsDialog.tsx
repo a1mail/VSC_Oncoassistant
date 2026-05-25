@@ -6,12 +6,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Settings, X, Edit2, Trash2, Plus, AlertCircle, FileText, Save, Upload } from 'lucide-react';
 import { profileService, SavedProviderProfile, ProviderListItem } from '@/lib/providers/profileService';
-import { ProviderFactory } from '@/lib/providers';
+import { enhancedAIService } from '@/lib/providers';
 import { ProviderForm } from './ProviderForm';
 import { aiService } from '@/lib/aiServiceCompat';
 import { Button } from '@/components/ui/button';
 import { MultiSelect } from '@/components/ui/multi-select';
-import { parseImportedProfiles, type ImportedProfileData } from '@/lib/profileImport';
+import { parseImportedProfiles } from '@/lib/profileImport';
 
 const PROVIDER_LABELS: Record<string, string> = {
   gemini: 'Google Gemini',
@@ -108,29 +108,23 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
 
   const loadFallbackSetting = (availableProfiles: ProviderListItem[] = profiles) => {
     try {
-      const settings = localStorage.getItem('ai_settings_enhanced');
-      if (settings) {
-        const parsed = JSON.parse(settings);
-        setEnableFallback(parsed.enableFallback !== false);
-        const availableIds = new Set(availableProfiles.map((profile) => profile.id));
-        const primaryProfileId =
-          typeof parsed.activeProfileId === 'string' && availableIds.has(parsed.activeProfileId)
-            ? parsed.activeProfileId
-            : availableProfiles.find((profile) => profile.isActive)?.id;
-        const storedFallbacks = Array.isArray(parsed.fallbackProfileIds) ? parsed.fallbackProfileIds : [];
-        setFallbackProfileIds(
-          storedFallbacks.filter(
-            (profileId: string, index: number) =>
-              typeof profileId === 'string' &&
-              storedFallbacks.indexOf(profileId) === index &&
-              availableIds.has(profileId) &&
-              profileId !== primaryProfileId,
-          ),
-        );
-      } else {
-        setEnableFallback(true);
-        setFallbackProfileIds([]);
-      }
+      const parsed = enhancedAIService.getSettings();
+      setEnableFallback(parsed.enableFallback !== false);
+      const availableIds = new Set(availableProfiles.map((profile) => profile.id));
+      const primaryProfileId =
+        typeof parsed.activeProfileId === 'string' && availableIds.has(parsed.activeProfileId)
+          ? parsed.activeProfileId
+          : availableProfiles.find((profile) => profile.isActive)?.id;
+      const storedFallbacks = Array.isArray(parsed.fallbackProfileIds) ? parsed.fallbackProfileIds : [];
+      setFallbackProfileIds(
+        storedFallbacks.filter(
+          (profileId: string, index: number) =>
+            typeof profileId === 'string' &&
+            storedFallbacks.indexOf(profileId) === index &&
+            availableIds.has(profileId) &&
+            profileId !== primaryProfileId,
+        ),
+      );
     } catch (error) {
       console.error('Error loading fallback setting:', error);
       setEnableFallback(true);
@@ -144,21 +138,23 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
     nextActiveProfileId?: string,
   ) => {
     try {
-      const settings = localStorage.getItem('ai_settings_enhanced');
-      const parsed = settings ? JSON.parse(settings) : {};
+      const parsed = enhancedAIService.getSettings();
       const activeProfileId =
         nextActiveProfileId || parsed.activeProfileId || profiles.find((profile) => profile.isActive)?.id || '';
-
-      parsed.enableFallback = nextEnableFallback;
-      parsed.activeProfileId = activeProfileId;
-      parsed.fallbackProfileIds = nextFallbackProfileIds.filter((profileId, index, all) => {
+      const normalizedFallbackIds = nextFallbackProfileIds.filter((profileId, index, all) => {
         return (
           typeof profileId === 'string' &&
           profileId !== activeProfileId &&
           all.indexOf(profileId) === index
         );
       });
-      localStorage.setItem('ai_settings_enhanced', JSON.stringify(parsed));
+
+      enhancedAIService.saveSettings({
+        ...parsed,
+        enableFallback: nextEnableFallback,
+        activeProfileId,
+        fallbackProfileIds: normalizedFallbackIds,
+      });
     } catch (error) {
       console.error('Error saving fallback setting:', error);
     }
@@ -339,15 +335,32 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
                   {/* Empty State */}
                   {profiles.length === 0 ? (
                 <div className="text-center py-12">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleImportFile}
+                    className="hidden"
+                    accept=".json,.txt"
+                  />
                   <Settings className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                   <p className="text-slate-600 mb-4">No provider profiles created yet</p>
-                  <button
-                    onClick={handleAddNew}
-                    className="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 font-medium transition-colors"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Create First Profile
-                  </button>
+                  <div className="inline-flex gap-2">
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="inline-flex items-center gap-2 bg-slate-100 text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-200 font-medium transition-colors"
+                      title="Импорт профилей (JSON/TXT)"
+                    >
+                      <Upload className="w-4 h-4" />
+                      Импорт
+                    </button>
+                    <button
+                      onClick={handleAddNew}
+                      className="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 font-medium transition-colors"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Create First Profile
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <>
@@ -738,4 +751,3 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
     </div>
   );
 }
-
