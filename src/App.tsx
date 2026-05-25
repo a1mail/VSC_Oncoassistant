@@ -10,12 +10,14 @@ import { TreatmentPage } from '@/pages/TreatmentPage';
 import { PrescriptionsPage } from '@/pages/PrescriptionsPage';
 import { DocumentsPage } from '@/pages/DocumentsPage';
 import { ConsultationProvider } from '@/context/ConsultationContext';
+import { StandaloneStorageBanner } from '@/components/StandaloneStorageBanner';
 import { ToastProvider } from '@/components/ui/toast';
 
 export default function App() {
   return (
     <ToastProvider>
     <ConsultationProvider>
+      <StandaloneStorageBanner />
       <HashRouter>
         <Routes>
           <Route path="/" element={<Layout />}>
