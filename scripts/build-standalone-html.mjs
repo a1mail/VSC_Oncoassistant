@@ -7,7 +7,7 @@ const projectRoot = path.resolve(path.dirname(currentFilePath), '..');
 const distDir = path.join(projectRoot, 'dist-standalone');
 const sourceHtmlPath = path.join(distDir, 'index.html');
 const targetDir = path.join(projectRoot, 'HTML variant');
-const targetHtmlPath = path.join(targetDir, 'Diagassist_5.html');
+const targetHtmlPath = path.join(targetDir, 'Diagassist_6.html');
 
 if (!fs.existsSync(sourceHtmlPath)) {
   throw new Error(`Standalone build not found: ${sourceHtmlPath}`);

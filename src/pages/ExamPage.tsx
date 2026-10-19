@@ -184,7 +184,19 @@ export function ExamPage() {
             <CardTitle>Молочные железы</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={watch('mammary_mode') === 'both'} onChange={(event) => {
+                setValue('mammary_mode', event.target.checked ? 'both' : 'separate');
+                handleSave();
+              }} />
+              Общее описание обеих молочных желез
+            </label>
+            {watch('mammary_mode') === 'both' && (
+              <label className="block text-sm">Обе молочные железы
+                <Textarea {...register('mammary_both_desc')} onBlur={handleBlur} placeholder="Общее описание обеих молочных желез..." />
+              </label>
+            )}
+            <div className={watch('mammary_mode') === 'both' ? 'hidden' : 'grid grid-cols-1 md:grid-cols-2 gap-6'}>
               <div className="space-y-2">
                 <Label className="font-bold">Правая молочная железа</Label>
                 <div className="grid grid-cols-2 gap-2">
@@ -283,6 +295,12 @@ export function ExamPage() {
             </Card>
           );
         })}
+        <Card>
+          <CardHeader><CardTitle>Другие органы и системы / дополнительные данные</CardTitle></CardHeader>
+          <CardContent>
+            <Textarea aria-label="Дополнительные данные физикального осмотра" {...register('additional_findings')} onBlur={handleBlur} placeholder="Данные, не вошедшие в другие разделы..." />
+          </CardContent>
+        </Card>
       </form>
     </div>
   );

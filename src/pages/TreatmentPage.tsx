@@ -10,6 +10,7 @@ import { esc, openPrintWindow, buildPatientInfoBlock, buildFooter } from '@/lib/
 import { extractRawAiDebugState, type RawAiDebugState } from '@/lib/rawAiDebug';
 import type { TreatmentResult, ConsultationData } from '@/lib/types/consultation';
 import { calculateAge } from '@/lib/utils/dateUtils';
+import { buildClinicalContext } from '@/lib/clinicalHistory';
 
 import { PromptPreviewDialog } from '@/components/PromptPreviewDialog';
 import { RawAiResponseDialog } from '@/components/RawAiResponseDialog';
@@ -69,6 +70,7 @@ export function TreatmentPage() {
       ecog: data.exam?.ecog,
       menopause_status: data.patient?.menopause_status,
       menopause_basis: data.patient?.menopause_basis,
+      ...buildClinicalContext(data),
     };
 
     let prompt = aiService.prepareTreatmentPrompt(data.diagnosis as unknown as Record<string, unknown>, patientContext as unknown as ConsultationData, data.documents || []);

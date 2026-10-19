@@ -14,6 +14,19 @@ import { StandaloneStorageBanner } from '@/components/StandaloneStorageBanner';
 import { ToastProvider } from '@/components/ui/toast';
 
 export default function App() {
+  const [ended, setEnded] = React.useState(false);
+  React.useEffect(() => {
+    const handleEnded = () => setEnded(true);
+    window.addEventListener('onco-session-ended', handleEnded);
+    return () => window.removeEventListener('onco-session-ended', handleEnded);
+  }, []);
+  if (ended) {
+    return <div className="p-12 space-y-4">
+      <h1 className="text-2xl font-bold">Сеанс завершен</h1>
+      <p>Данные приложения в памяти очищены. Закройте вкладку браузера и извлеките флешку.</p>
+      <p>История браузера, буфер обмена и следы операционной системы не контролируются приложением.</p>
+    </div>;
+  }
   return (
     <ToastProvider>
     <ConsultationProvider>

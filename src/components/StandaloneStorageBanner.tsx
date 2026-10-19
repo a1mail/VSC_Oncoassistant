@@ -2,6 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { HardDrive, FolderOpen, Save, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/toast';
+import { useConsultation } from '@/context/ConsultationContext';
+import { clearPortableSession } from '@/lib/appStorage';
+import { profileService } from '@/lib/providers/profileService';
+import { enhancedAIService } from '@/lib/providers';
 import {
   exportStandaloneHtmlWithEmbeddedProfiles,
   isStandaloneHtmlFileVariant,
@@ -13,6 +17,7 @@ import {
   isDiagassist4Variant,
   subscribePortablePatientStorage,
   type PortablePatientStorageState,
+  disconnectPortablePatientStorage,
 } from '@/lib/portablePatientStorage';
 
 /**
@@ -21,6 +26,8 @@ import {
  */
 export function StandaloneStorageBanner() {
   const toast = useToast();
+  const { resetData, saveToServer, activeAiTask, data } = useConsultation();
+  const [ended, setEnded] = useState(false);
   const [state, setState] = useState<PortablePatientStorageState>(getPortablePatientStorageState);
   const canSaveHtml = isStandaloneHtmlFileVariant();
   const canDirectSaveHtml = supportsDirectHtmlSave();
@@ -46,6 +53,7 @@ export function StandaloneStorageBanner() {
 
   const handleSaveStandaloneHtml = async () => {
     try {
+      if (!confirm('HTML будет содержать API-ключи профилей в открытом виде. Сохраняйте только на своей флешке; не публикуйте этот персонализированный файл. Продолжить?')) return;
       const result = await exportStandaloneHtmlWithEmbeddedProfiles();
       toast.success(
         result === 'saved'
@@ -61,6 +69,37 @@ export function StandaloneStorageBanner() {
       toast.error(message);
     }
   };
+
+  /** Refuse to discard a live AI request or unsaved patient, then release all application session state. */
+  const handleEndSession = async () => {
+    if (activeAiTask?.status === 'running') {
+      toast.error('Дождитесь окончания запроса ИИ перед завершением сеанса.');
+      return;
+    }
+    if (!confirm('Сохранить пациента на флешке и завершить сеанс? Профили сохраните в HTML заранее.')) return;
+    if (data.patient?.full_name) {
+      const result = await saveToServer();
+      if (!result.success) { toast.error(result.message); return; }
+    }
+    enhancedAIService.stopHealthChecks();
+    profileService.clearAll();
+    clearPortableSession();
+    enhancedAIService.reloadSettings();
+    disconnectPortablePatientStorage();
+    resetData();
+    const embedded = document.getElementById('oncoassistant-embedded-state');
+    if (embedded) embedded.textContent = '';
+    setEnded(true);
+    window.dispatchEvent(new Event('onco-session-ended'));
+  };
+
+  if (ended) {
+    return <div role="dialog" aria-modal="true" className="fixed inset-0 z-[1000] bg-white p-12">
+      <h1 className="text-2xl font-bold">Сеанс завершен</h1>
+      <p>Данные приложения в памяти очищены. Закройте вкладку браузера и извлеките флешку.</p>
+      <p>История браузера, буфер обмена и следы операционной системы не контролируются приложением.</p>
+    </div>;
+  }
 
   return (
     <div className="border-b border-amber-200 bg-amber-50 px-6 py-3 no-print">
@@ -78,23 +117,24 @@ export function StandaloneStorageBanner() {
                 <p>
                   {state.selected
                     ? `Текущая папка: ${state.folderName}. Данные пациентов и консультаций сохраняются в файл ${state.fileName}.`
-                    : `Выберите папку на флешке или другом носителе. До выбора папки приложение временно использует localStorage браузера.`}
+                    : `Выберите папку на флешке. До выбора папки данные находятся только в памяти и не сохраняются после закрытия вкладки.`}
                 </p>
                 {canSaveHtml && (
                   <p>
-                    После добавления или импорта профилей провайдеров нажмите «Сохранить HTML с профилями», чтобы встроить их прямо в `Diagassist_5.html`.
+                    После изменения профилей сохраните персональную копию HTML на флешке. API-ключи в ней доступны для чтения; не публикуйте эту копию.
                   </p>
                 )}
               </div>
             ) : (
               <p className="text-sm text-slate-700">
-                В этом браузере выбор папки недоступен. Для сохранения базы на флешке используйте Microsoft Edge или Google Chrome.
+                Выбор папки недоступен. Данные находятся только в памяти; используйте Edge или Chrome для файловой базы и сохраняйте экспорт вручную на флешку.
               </p>
             )}
           </div>
         </div>
 
         <div className="flex flex-wrap gap-2 self-start lg:self-auto">
+          <Button onClick={handleEndSession} variant="outline">Завершить сеанс</Button>
           {state.supported && (
             <Button onClick={handleChooseFolder} className="gap-2">
               <FolderOpen className="h-4 w-4" />

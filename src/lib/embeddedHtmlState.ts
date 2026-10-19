@@ -1,9 +1,25 @@
 import type { EnhancedAISettings } from '@/lib/providers/types';
+import { appStorage } from './appStorage';
+import { z } from 'zod';
+
+const embeddedProfileSchema = z.object({
+  id: z.string(), name: z.string(), modelName: z.string(),
+  type: z.enum(['gemini', 'openai_compatible', 'anthropic', 'deepseek', 'qwen', 'gigachat', 'alice', 'openrouter', 'aitunnel', 'local']),
+  apiKey: z.string().optional(), baseUrl: z.string().optional(),
+  isActive: z.boolean(), createdAt: z.string(), updatedAt: z.string(),
+}).passthrough();
+
+const embeddedSchema = z.object({
+  version: z.literal(1),
+  persistedAt: z.string().nullable(),
+  providerProfiles: z.array(embeddedProfileSchema),
+  enhancedAiSettings: z.record(z.string(), z.unknown()).nullable(),
+});
 
 const EMBEDDED_STATE_SCRIPT_ID = 'oncoassistant-embedded-state';
 const PROVIDER_PROFILES_STORAGE_KEY = 'onco_ai_provider_profiles';
 const ENHANCED_SETTINGS_STORAGE_KEY = 'ai_settings_enhanced';
-const DEFAULT_STANDALONE_FILENAME = 'Diagassist_5.html';
+const DEFAULT_STANDALONE_FILENAME = 'Diagassist_6.html';
 
 export interface EmbeddedHtmlState {
   version: 1;
@@ -67,7 +83,7 @@ export function isStandaloneHtmlFileVariant(): boolean {
   }
 
   const normalizedPath = window.location.pathname.toLowerCase();
-  return /diagassist_[45]\.html?$/.test(normalizedPath);
+  return /diagassist_\d+\.html?$/.test(normalizedPath);
 }
 
 export function readEmbeddedHtmlState(): EmbeddedHtmlState {
@@ -80,7 +96,11 @@ export function readEmbeddedHtmlState(): EmbeddedHtmlState {
     return createDefaultEmbeddedHtmlState();
   }
 
-  const parsed = safeJsonParse<Partial<EmbeddedHtmlState>>(script.textContent, createDefaultEmbeddedHtmlState());
+  const validation = embeddedSchema.safeParse(safeJsonParse<unknown>(script.textContent, null));
+  if (!validation.success) {
+    throw new Error('Некорректные встроенные настройки HTML. Используйте исходный файл и повторите импорт профилей.');
+  }
+  const parsed = validation.data;
   return {
     version: 1,
     persistedAt: typeof parsed.persistedAt === 'string' ? parsed.persistedAt : null,
@@ -93,7 +113,7 @@ export function readEmbeddedHtmlState(): EmbeddedHtmlState {
 }
 
 export function initializeEmbeddedHtmlState(): void {
-  if (typeof window === 'undefined' || typeof localStorage === 'undefined') {
+  if (typeof window === 'undefined') {
     return;
   }
 
@@ -102,13 +122,13 @@ export function initializeEmbeddedHtmlState(): void {
     return;
   }
 
-  localStorage.setItem(
+  appStorage.setItem(
     PROVIDER_PROFILES_STORAGE_KEY,
     JSON.stringify(Array.isArray(embeddedState.providerProfiles) ? embeddedState.providerProfiles : []),
   );
 
   if (embeddedState.enhancedAiSettings) {
-    localStorage.setItem(
+    appStorage.setItem(
       ENHANCED_SETTINGS_STORAGE_KEY,
       JSON.stringify(embeddedState.enhancedAiSettings),
     );
@@ -129,15 +149,17 @@ function getSuggestedStandaloneFileName(): string {
 }
 
 function getCurrentEmbeddedExportState(): EmbeddedHtmlState {
-  return {
+  const state: EmbeddedHtmlState = {
     version: 1,
     persistedAt: new Date().toISOString(),
-    providerProfiles: safeJsonParse<unknown[]>(localStorage.getItem(PROVIDER_PROFILES_STORAGE_KEY), []),
+    providerProfiles: safeJsonParse<unknown[]>(appStorage.getItem(PROVIDER_PROFILES_STORAGE_KEY), []),
     enhancedAiSettings: safeJsonParse<Partial<EnhancedAISettings> | null>(
-      localStorage.getItem(ENHANCED_SETTINGS_STORAGE_KEY),
+      appStorage.getItem(ENHANCED_SETTINGS_STORAGE_KEY),
       null,
     ),
   };
+  embeddedSchema.parse(state);
+  return state;
 }
 
 function resetRootMarkup(clonedDocument: HTMLElement): void {
@@ -160,7 +182,11 @@ function upsertEmbeddedStateScript(clonedDocument: HTMLElement, state: EmbeddedH
     }
   }
 
-  script.textContent = JSON.stringify(state, null, 2);
+  script.textContent = serializeEmbeddedJson(state);
+}
+
+export function serializeEmbeddedJson(state: unknown): string {
+  return JSON.stringify(state, null, 2).replace(/</g, '\\u003c');
 }
 
 export function buildStandaloneHtmlWithEmbeddedProfiles(): string {

@@ -40,7 +40,7 @@ export function openPrintWindow({ title, extraCss, bodyHtml }: PrintWindowOption
   const css = PRINT_BASE_CSS + (extraCss ?? '');
 
   printWindow.document.write(
-    `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${css}</style></head><body>${bodyHtml}<script>window.onload=function(){window.print();window.close();}<\/script></body></html>`,
+    `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${css}</style></head><body>${bodyHtml}<script>window.onload=function(){window.print();window.close();}<${'/script'}></body></html>`,
   );
   printWindow.document.close();
 }

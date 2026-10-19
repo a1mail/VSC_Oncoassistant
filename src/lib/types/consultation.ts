@@ -27,6 +27,27 @@ export interface AnamnesisData {
   occupation_desc?: string;
   harmful_factors?: string[];
   harmful_factors_desc?: string;
+  vitae_additional?: string;
+  history?: ClinicalHistoryEntry[];
+}
+
+export interface ClinicalHistoryEntry {
+  id: string;
+  date: string;
+  full_text: string;
+  summary: string;
+  diagnosis: string;
+  prescribed_treatment: string;
+  performed_treatment: string;
+}
+
+export interface ImagingStudy {
+  id: string;
+  method: string;
+  date: string;
+  region: string;
+  description: string;
+  findings: string[];
 }
 
 export interface ExamData {
@@ -37,6 +58,9 @@ export interface ExamData {
   ecog?: string;
   constitution?: string;
   mammary_lymph_nodes?: string;
+  mammary_mode?: 'separate' | 'both';
+  mammary_both_desc?: string;
+  additional_findings?: string;
   [key: string]: unknown;
 }
 
@@ -50,6 +74,7 @@ export interface DiagnosticsData {
   imaging_desc?: string;
   histology_desc?: string;
   ihc_desc?: string;
+  imaging_studies?: ImagingStudy[];
   [key: string]: unknown;
 }
 
@@ -87,6 +112,7 @@ export interface ConsultationDocument {
   type: 'text' | 'image';
   content: string;
   includeInAnalysis: boolean;
+  source?: 'upload' | 'paste';
 }
 
 export interface ConsultationData {

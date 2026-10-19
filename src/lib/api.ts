@@ -16,6 +16,7 @@ export type Patient = {
   latest_diagnosis?: string;
 };
 
+import { appStorage } from '@/lib/appStorage';
 import {
   loadPortablePatientDatabase,
   savePortablePatientDatabase,
@@ -27,7 +28,7 @@ const CONSULTATIONS_STORAGE_KEY = 'onco_consultations';
 
 function readPatientsFromLocalStorage(): Patient[] {
   try {
-    const data = localStorage.getItem(PATIENTS_STORAGE_KEY);
+    const data = appStorage.getItem(PATIENTS_STORAGE_KEY);
     return data ? JSON.parse(data) as Patient[] : [];
   } catch {
     return [];
@@ -36,7 +37,7 @@ function readPatientsFromLocalStorage(): Patient[] {
 
 function readConsultationsFromLocalStorage(): Record<string, PortableConsultationRecord> {
   try {
-    const data = localStorage.getItem(CONSULTATIONS_STORAGE_KEY);
+    const data = appStorage.getItem(CONSULTATIONS_STORAGE_KEY);
     return data ? JSON.parse(data) as Record<string, PortableConsultationRecord> : {};
   } catch {
     return {};
@@ -47,8 +48,8 @@ function writeLocalMirror(
   patients: Patient[],
   consultations: Record<string, PortableConsultationRecord>
 ): void {
-  localStorage.setItem(PATIENTS_STORAGE_KEY, JSON.stringify(patients));
-  localStorage.setItem(CONSULTATIONS_STORAGE_KEY, JSON.stringify(consultations));
+  appStorage.setItem(PATIENTS_STORAGE_KEY, JSON.stringify(patients));
+  appStorage.setItem(CONSULTATIONS_STORAGE_KEY, JSON.stringify(consultations));
 }
 
 /**
@@ -76,24 +77,28 @@ async function getStorageSnapshot(): Promise<{
 
 /**
  * Persists the patient storage snapshot.
- * The local mirror is always updated so the rest of the app keeps working unchanged.
+ * Update the active browser or memory snapshot only after the durable write succeeds.
  */
 async function saveStorageSnapshot(
   patients: Patient[],
   consultations: Record<string, PortableConsultationRecord>
 ): Promise<void> {
-  writeLocalMirror(patients, consultations);
-
-  try {
-    await savePortablePatientDatabase({
+  await savePortablePatientDatabase({
       version: 1,
       savedAt: new Date().toISOString(),
       patients,
       consultations,
-    });
-  } catch (error) {
-    console.error('Portable patient DB save failed, using localStorage mirror only:', error);
-  }
+  });
+  writeLocalMirror(patients, consultations);
+}
+
+let mutationQueue: Promise<unknown> = Promise.resolve();
+
+/** Serialize read-modify-write operations so concurrent autosaves cannot overwrite each other. */
+function serializeMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = mutationQueue.then(operation);
+  mutationQueue = result.catch(() => undefined);
+  return result;
 }
 
 export const api = {
@@ -102,10 +107,10 @@ export const api = {
     return snapshot.patients;
   },
 
-  savePatient: async (patient: Patient): Promise<Patient> => {
+  savePatient: (patient: Patient): Promise<Patient> => serializeMutation(async () => {
     const snapshot = await getStorageSnapshot();
     const patients = [...snapshot.patients];
-    let updatedPatient = { ...patient };
+    const updatedPatient = { ...patient };
     
     if (patient.id) {
       const index = patients.findIndex(p => p.id === patient.id);
@@ -125,22 +130,22 @@ export const api = {
     
     await saveStorageSnapshot(patients, snapshot.consultations);
     return updatedPatient;
-  },
+  }),
 
-  deletePatient: async (id: number): Promise<void> => {
+  deletePatient: (id: number): Promise<void> => serializeMutation(async () => {
     const snapshot = await getStorageSnapshot();
     const newPatients = snapshot.patients.filter((p) => p.id !== id);
     const allConsultations = { ...snapshot.consultations };
     delete allConsultations[id];
     await saveStorageSnapshot(newPatients, allConsultations);
-  },
+  }),
 
   getConsultation: async (patientId: number) => {
     const snapshot = await getStorageSnapshot();
     return snapshot.consultations[patientId] || null;
   },
 
-  saveConsultation: async (patientId: number, data: Record<string, unknown>) => {
+  saveConsultation: (patientId: number, data: Record<string, unknown>) => serializeMutation(async () => {
     const snapshot = await getStorageSnapshot();
     const allConsultations: Record<string, PortableConsultationRecord> = {
       ...snapshot.consultations,
@@ -153,7 +158,6 @@ export const api = {
     };
     
     allConsultations[patientId] = consultation;
-    await saveStorageSnapshot(snapshot.patients, allConsultations);
 
     // Update latest diagnosis on patient
     const diag = data?.diagnosis as Record<string, unknown> | undefined;
@@ -164,9 +168,11 @@ export const api = {
       if (pIndex >= 0) {
         patients[pIndex].latest_diagnosis = latestDiagnosis;
         await saveStorageSnapshot(patients, allConsultations);
+        return { id: Date.now() };
       }
     }
     
+    await saveStorageSnapshot(snapshot.patients, allConsultations);
     return { id: Date.now() };
-  }
+  })
 };

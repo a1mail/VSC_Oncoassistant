@@ -7,6 +7,7 @@
 
 import { enhancedAIService, EnhancedAIProfile, ProviderFactory, RequestContext } from '@/lib/providers';
 import { removeEmptyFields } from '@/lib/utils/jsonUtils';
+import { appStorage } from '@/lib/appStorage';
 import { normalizeApiKey } from '@/lib/utils/apiKeyUtils';
 import { getCustomSystemPrompt, redactPatientPII, appendDocumentsToPrompt } from '@/lib/utils/promptHelpers';
 import { profileService, SavedProviderProfile } from '@/lib/providers/profileService';
@@ -1073,7 +1074,7 @@ function syncProfilesFromService(): void {
  */
 function migrateToEnhanced(legacySettings: AISettings): void {
   // Load legacy settings and check if migration is needed
-  const stored = localStorage.getItem('ai_settings_enhanced');
+  const stored = appStorage.getItem('ai_settings_enhanced');
   if (stored) {
     // Already migrated
     return;
@@ -1131,12 +1132,12 @@ function migrateToEnhanced(legacySettings: AISettings): void {
 export const aiService = {
   getConfig: (): AISettings => {
     // Try to get legacy settings first
-    const stored = localStorage.getItem('ai_settings');
+    const stored = appStorage.getItem('ai_settings');
     if (stored) {
       return JSON.parse(stored);
     }
     
-    const legacy = localStorage.getItem('ai_config');
+    const legacy = appStorage.getItem('ai_config');
     if (legacy) {
       const parsed = JSON.parse(legacy);
       const migrated: AIProfile = {
@@ -1152,7 +1153,7 @@ export const aiService = {
         activeProfileId: 'migrated-profile',
         enableFallback: true
       };
-      localStorage.setItem('ai_settings', JSON.stringify(settings));
+      appStorage.setItem('ai_settings', JSON.stringify(settings));
       return settings;
     }
 
@@ -1174,7 +1175,7 @@ export const aiService = {
   },
 
   setConfig: (settings: AISettings) => {
-    localStorage.setItem('ai_settings', JSON.stringify(settings));
+    appStorage.setItem('ai_settings', JSON.stringify(settings));
     // Also migrate to enhanced
     migrateToEnhanced(settings);
   },
@@ -1331,7 +1332,7 @@ Do not use Markdown, just raw JSON.
         console.warn(
           `Primary AI response returned invalid ${responseFormat.toUpperCase()}, attempting repair pass...`,
         );
-        console.warn(`Invalid ${responseFormat.toUpperCase()} preview:`, content.slice(0, LOG_PREVIEW_LIMIT));
+        console.warn(`Invalid ${responseFormat.toUpperCase()} response; clinical content omitted from logs.`);
 
         const debugMetadata: AiDebugMetadata = {
           rawResponse: content,
@@ -1387,7 +1388,7 @@ Do not use Markdown, just raw JSON.
 };
 
 // Initialize migration if needed
-if (typeof window !== 'undefined' && localStorage) {
+if (typeof window !== 'undefined') {
   const legacySettings = aiService.getConfig();
   migrateToEnhanced(legacySettings);
 }

@@ -7,6 +7,7 @@ import { EnhancedAIProfile, EnhancedAISettings, RequestContext, AIResponse, Heal
 import { AIProviderAdapter } from './adapter';
 import { ProviderFactory } from './factory';
 import { ProviderSelector } from './selector';
+import { appStorage } from '../appStorage';
 
 const DEFAULT_GEMINI_API_KEY =
   (process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY || '').trim();
@@ -86,7 +87,7 @@ export class EnhancedAIService {
    */
   private loadSettings(): EnhancedAISettings {
     try {
-      const stored = localStorage.getItem('ai_settings_enhanced');
+      const stored = appStorage.getItem('ai_settings_enhanced');
       if (stored) {
         return this.normalizeSettings(JSON.parse(stored));
       }
@@ -103,7 +104,7 @@ export class EnhancedAIService {
    */
   saveSettings(settings: EnhancedAISettings): void {
     this.settings = this.normalizeSettings(settings);
-    localStorage.setItem('ai_settings_enhanced', JSON.stringify(this.settings));
+    appStorage.setItem('ai_settings_enhanced', JSON.stringify(this.settings));
     this.clearStaleAdapters();
   }
 

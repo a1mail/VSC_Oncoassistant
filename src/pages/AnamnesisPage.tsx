@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import { useConsultation } from '@/context/ConsultationContext';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
+import { ClinicalHistoryEditor } from '@/components/ClinicalHistoryEditor';
 
 const COMPLAINT_CATEGORIES = {
   "Общие": ["Общая слабость", "Потеря веса", "Повышение температуры", "Потливость", "Снижение аппетита", "Нарушение сна", "Отеки", "Утомляемость", "Озноб", "Жажда"],
@@ -153,12 +154,17 @@ export function AnamnesisPage() {
           </CardContent>
         </Card>
 
+        <ClinicalHistoryEditor />
+
         {/* Anamnesis Vitae */}
         <Card>
           <CardHeader>
             <CardTitle>История жизни (Anamnesis Vitae)</CardTitle>
           </CardHeader>
           <CardContent className="space-y-6">
+            <label className="block text-sm">Дополнительная информация для анализа
+              <Textarea {...register("vitae_additional")} onBlur={handleSave} placeholder="Любые важные сведения из истории жизни..." />
+            </label>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <Label>Наследственность (онкология у родственников)</Label>

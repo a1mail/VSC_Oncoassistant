@@ -10,6 +10,7 @@ import { esc, openPrintWindow, buildPatientInfoBlock, buildFooter } from '@/lib/
 import { extractRawAiDebugState, type RawAiDebugState } from '@/lib/rawAiDebug';
 import type { DiagnosisResult } from '@/lib/types/consultation';
 import { calculateAge } from '@/lib/utils/dateUtils';
+import { buildClinicalContext } from '@/lib/clinicalHistory';
 
 import { PromptPreviewDialog } from '@/components/PromptPreviewDialog';
 import { RawAiResponseDialog } from '@/components/RawAiResponseDialog';
@@ -53,9 +54,7 @@ export function DiagnosisPage() {
       gender: data.patient?.gender,
       menopause_status: data.patient?.menopause_status,
       menopause_basis: data.patient?.menopause_basis,
-      anamnesis: data.anamnesis,
-      exam: data.exam,
-      diagnostics: data.diagnostics
+      ...buildClinicalContext(data),
     };
 
     let prompt = aiService.prepareDiagnosisPrompt(patientContext, data.documents || []);

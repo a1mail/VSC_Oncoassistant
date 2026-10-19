@@ -5,6 +5,7 @@ import { Copy, Printer, X } from 'lucide-react';
 import { normalizePrescriptions, toPrescriptionText } from '@/lib/prescriptions';
 import { esc, openPrintWindow } from '@/lib/htmlUtils';
 import type { PatientData, ExamData, TreatmentResult } from '@/lib/types/consultation';
+import { activeExam, formatClinicalHistory, getImagingStudies } from '@/lib/clinicalHistory';
 
 interface ReportDialogProps {
   isOpen: boolean;
@@ -25,6 +26,7 @@ const sectionLabels: Record<string, Record<string, string>> = {
     occupation_desc: 'Профессиональная деятельность',
     harmful_factors: 'Вредные факторы',
     harmful_factors_desc: 'Описание вредных факторов',
+    vitae_additional: 'Дополнительные сведения из истории жизни',
   },
   exam: {
     height: 'Рост',
@@ -175,6 +177,7 @@ const appendPatientSection = (parts: string[], patient: PatientData | undefined)
 
 const appendExamSection = (parts: string[], exam: ExamData | undefined) => {
   if (!exam || typeof exam !== 'object') return;
+  exam = activeExam(exam);
   const lines: string[] = [];
   const pushLine = (label: string, value: unknown) => {
     const text = toText(value);
@@ -188,6 +191,8 @@ const appendExamSection = (parts: string[], exam: ExamData | undefined) => {
   pushLine('Площадь поверхности тела (BSA)', exam.bsa);
   pushLine('ECOG', exam.ecog);
   pushLine('Телосложение', exam.constitution);
+  pushLine('Обе молочные железы', exam.mammary_both_desc);
+  pushLine('Другие органы и системы', exam.additional_findings);
   pushLine('Правая молочная железа', exam.mammary_right_desc);
   pushLine('Левая молочная железа', exam.mammary_left_desc);
   pushLine('Регионарные лимфоузлы', exam.mammary_lymph_nodes);
@@ -284,8 +289,20 @@ export function ReportDialog({ isOpen, onClose }: ReportDialogProps) {
 
     appendPatientSection(parts, data.patient);
     appendGenericSection(parts, '2. Жалобы и анамнез', data.anamnesis, sectionLabels.anamnesis);
+    const history = formatClinicalHistory(data.anamnesis?.history);
+    if (history) parts.push('Краткая история развития заболевания', history, '');
     appendExamSection(parts, data.exam);
     appendGenericSection(parts, '4. Обследования', data.diagnostics, sectionLabels.diagnostics);
+    const studies = getImagingStudies(data.diagnostics);
+    if (studies.length) {
+      parts.push('Хронология инструментальных обследований');
+      studies.forEach((study) => parts.push(
+        `${study.date || 'Дата неизвестна'} | ${study.method}${study.region ? ` | ${study.region}` : ''}`,
+        study.description,
+        study.findings.join('; '),
+      ));
+      parts.push('');
+    }
     appendGenericSection(parts, '5. Диагноз', data.diagnosis, sectionLabels.diagnosis);
     appendTreatmentSection(parts, data.treatment);
     appendPrescriptionsSection(parts, data.treatment);
@@ -295,9 +312,6 @@ export function ReportDialog({ isOpen, onClose }: ReportDialogProps) {
       data.documents.forEach((doc: { name?: string; type?: string; includeInAnalysis?: boolean; content?: string }, index: number) => {
         const meta = `Документ ${index + 1}: ${safe(doc.name)} | Тип: ${safe(doc.type)} | Для ИИ: ${yesNo(!!doc.includeInAnalysis)}`;
         parts.push(meta);
-        if (doc.type === 'text' && typeof doc.content === 'string' && doc.content.trim()) {
-          parts.push(`Фрагмент: ${doc.content.slice(0, 600)}`);
-        }
       });
       parts.push('');
     }

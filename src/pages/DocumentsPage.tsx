@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { FileText, Image as ImageIcon, Trash2, Eye, Upload, ArrowRight, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import type { ConsultationDocument } from '@/lib/types/consultation';
+import { PastedDocumentsEditor } from '@/components/PastedDocumentsEditor';
 
 export function DocumentsPage() {
   const { data, updateData } = useConsultation();
@@ -101,6 +102,8 @@ export function DocumentsPage() {
           </Button>
         </div>
       </div>
+
+      <PastedDocumentsEditor />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {data.documents?.map((doc) => (

@@ -1,4 +1,5 @@
 import { OpenRouterModelInfo } from './types';
+import { appStorage } from '../appStorage';
 
 type OpenRouterApiModel = {
   id: string;
@@ -37,7 +38,7 @@ function getEmptyCacheRecord(): OpenRouterCacheRecord {
 }
 
 function isBrowserRuntime(): boolean {
-  return typeof window !== 'undefined' && typeof localStorage !== 'undefined';
+  return typeof window !== 'undefined';
 }
 
 function readCacheRecord(): OpenRouterCacheRecord {
@@ -46,7 +47,7 @@ function readCacheRecord(): OpenRouterCacheRecord {
   }
 
   try {
-    const raw = localStorage.getItem(CACHE_KEY);
+    const raw = appStorage.getItem(CACHE_KEY);
     if (!raw) {
       return getEmptyCacheRecord();
     }
@@ -69,7 +70,7 @@ function writeCacheRecord(record: OpenRouterCacheRecord): void {
   }
 
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(record));
+    appStorage.setItem(CACHE_KEY, JSON.stringify(record));
   } catch (error) {
     console.warn('Failed to write OpenRouter model cache:', error);
   }

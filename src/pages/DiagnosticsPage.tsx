@@ -10,6 +10,7 @@ import { MultiSelect, stringsToOptions } from '@/components/ui/multi-select';
 import { useConsultation } from '@/context/ConsultationContext';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
+import { ImagingStudyEditor } from '@/components/ImagingStudyEditor';
 
 const IMAGING_METHODS = [
   "Рентген",
@@ -256,6 +257,8 @@ export function DiagnosticsPage() {
                 </div>
               </div>
             ))}
+
+            <ImagingStudyEditor methods={selectedMethods} />
 
             {selectedMethods.length === 0 && (
               <div className="p-4 bg-slate-50 rounded-lg text-sm text-slate-600">

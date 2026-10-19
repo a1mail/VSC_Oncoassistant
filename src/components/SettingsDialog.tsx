@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import { appStorage } from '@/lib/appStorage';
 import { Settings, X, Edit2, Trash2, Plus, AlertCircle, FileText, Save, Upload } from 'lucide-react';
 import { profileService, SavedProviderProfile, ProviderListItem } from '@/lib/providers/profileService';
 import { enhancedAIService } from '@/lib/providers';
@@ -65,7 +66,7 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
   const loadPrompts = async () => {
     setIsLoadingPrompts(true);
     try {
-      const stored = localStorage.getItem('onco_prompts');
+      const stored = appStorage.getItem('onco_prompts');
       if (stored) {
         setPrompts(JSON.parse(stored));
       } else {
@@ -79,7 +80,7 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
           }
         ];
         setPrompts(defaultPrompts);
-        localStorage.setItem('onco_prompts', JSON.stringify(defaultPrompts));
+        appStorage.setItem('onco_prompts', JSON.stringify(defaultPrompts));
       }
     } catch (err) {
       console.error('Failed to load prompts', err);
@@ -92,7 +93,7 @@ export function SettingsDialog({ isOpen, onClose }: { isOpen: boolean; onClose: 
     try {
       const newPrompts = prompts.map(p => p.id === id ? { ...p, content: promptContent } : p);
       setPrompts(newPrompts);
-      localStorage.setItem('onco_prompts', JSON.stringify(newPrompts));
+      appStorage.setItem('onco_prompts', JSON.stringify(newPrompts));
       setEditingPromptId(null);
     } catch (err) {
       console.error(err);

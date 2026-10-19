@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
+import { appStorage } from '@/lib/appStorage';
 import { aiService } from '@/lib/aiService';
 import { enhancedAIService } from '@/lib/providers';
 import type { ConsultationData, ConsultationDocument, AiDebugMetadata } from '@/lib/types/consultation';
@@ -61,7 +62,7 @@ const DRAFT_STORAGE_KEY = 'onco_consultation_draft';
 const loadDraft = (): ConsultationData => {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    const raw = appStorage.getItem(DRAFT_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? parsed : {};
@@ -97,7 +98,7 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
     setActiveAiTask(null);
     setRetryContexts({});
     if (typeof window !== 'undefined') {
-      localStorage.removeItem(DRAFT_STORAGE_KEY);
+      appStorage.removeItem(DRAFT_STORAGE_KEY);
     }
     triggerReload();
   }, [triggerReload]);
@@ -132,12 +133,11 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
             message: 'Данные успешно сохранены', 
             type: 'success' 
           };
-        } catch (e:any) {
-          console.error(e);
+        } catch (e: unknown) {
           setSaveStatus('error');
           return { 
             success: false, 
-            message: `Ошибка при сохранении: ${e?.message || 'неизвестная ошибка'}`, 
+            message: `Ошибка при сохранении: ${e instanceof Error ? e.message : 'неизвестная ошибка'}`,
             type: 'error' 
           };
         }
@@ -161,12 +161,11 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
         message: 'Данные успешно сохранены', 
         type: 'success' 
       };
-    } catch (error:any) {
-      console.error(error);
+    } catch (error: unknown) {
       setSaveStatus('error');
       return { 
         success: false, 
-        message: `Ошибка при сохранении: ${error?.message || 'неизвестная ошибка'}`, 
+        message: `Ошибка при сохранении: ${error instanceof Error ? error.message : 'неизвестная ошибка'}`,
         type: 'error' 
       };
     }
@@ -312,7 +311,7 @@ export function ConsultationProvider({ children }: { children: React.ReactNode }
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(data));
+      appStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(data));
     }
   }, [data]);
 

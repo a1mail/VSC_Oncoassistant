@@ -6,6 +6,7 @@
  */
 
 import { OpenRouterModelInfo } from './types';
+import { appStorage } from '../appStorage';
 import { getOpenRouterModelInfo } from './openrouterModelRegistry';
 
 export interface SavedProviderProfile {
@@ -88,7 +89,7 @@ class ProfileService {
    */
   private loadProfiles(): void {
     try {
-      const stored = localStorage.getItem(this.STORAGE_KEY);
+      const stored = appStorage.getItem(this.STORAGE_KEY);
       const parsed = stored ? JSON.parse(stored) : [];
       this.profiles = Array.isArray(parsed) ? this.normalizeProfiles(parsed) : [];
       console.log(`✓ Loaded ${this.profiles.length} profiles from localStorage`);
@@ -104,7 +105,7 @@ class ProfileService {
    */
   private saveProfiles(): void {
     try {
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.profiles));
+      appStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.profiles));
       console.log(`✓ Saved ${this.profiles.length} profiles to localStorage`);
     } catch (error) {
       console.error('Failed to save profiles:', error);

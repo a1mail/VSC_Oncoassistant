@@ -1,8 +1,9 @@
 import { removeEmptyFields } from '@/lib/utils/jsonUtils';
+import { appStorage } from '@/lib/appStorage';
 
 export function getCustomSystemPrompt(fallback: string): string {
   try {
-    const storedPrompts = localStorage.getItem('onco_prompts');
+    const storedPrompts = appStorage.getItem('onco_prompts');
     if (storedPrompts) {
       const prompts = JSON.parse(storedPrompts);
       if (prompts.length > 0 && prompts[0].content) {
@@ -30,12 +31,12 @@ export function redactPatientPII(patientData: Record<string, unknown>): Record<s
 
 export function appendDocumentsToPrompt(
   prompt: string,
-  documents: Array<{ type?: string; name?: string; content?: string }> | undefined,
+  documents: Array<{ type?: string; name?: string; content?: string; includeInAnalysis?: boolean }> | undefined,
 ): string {
   if (!documents || documents.length === 0) return prompt;
 
   let result = prompt + '\n\nAttached Medical Documents:\n';
-  documents.forEach((doc, index) => {
+  documents.filter((doc) => doc.includeInAnalysis !== false).forEach((doc, index) => {
     if (doc.type === 'text') {
       result += `\n--- Document ${index + 1} (${doc.name}) ---\n${doc.content}\n`;
     } else {

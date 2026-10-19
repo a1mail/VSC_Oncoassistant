@@ -19,9 +19,9 @@ export default defineConfig(({ mode, command }) => {
   return {
     plugins,
     define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-      'process.env.API_KEY': JSON.stringify(env.API_KEY),
-      'process.env.GOOGLE_API_KEY': JSON.stringify(env.GOOGLE_API_KEY),
+      'process.env.GEMINI_API_KEY': JSON.stringify(command === 'build' ? '' : env.GEMINI_API_KEY || ''),
+      'process.env.API_KEY': JSON.stringify(command === 'build' ? '' : env.API_KEY || ''),
+      'process.env.GOOGLE_API_KEY': JSON.stringify(command === 'build' ? '' : env.GOOGLE_API_KEY || ''),
     },
     resolve: {
       alias: {

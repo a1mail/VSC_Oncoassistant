@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { appStorage } from './appStorage';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 
@@ -214,7 +215,7 @@ export function sanitizeInput(input: string, maxLength: number = 1000): string {
  */
 export function getAuthToken(): string | null {
   if (typeof window === 'undefined') return null;
-  return localStorage.getItem('auth_token');
+  return appStorage.getItem('auth_token');
 }
 
 /**
@@ -222,7 +223,7 @@ export function getAuthToken(): string | null {
  */
 export function setAuthToken(token: string): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem('auth_token', token);
+  appStorage.setItem('auth_token', token);
 }
 
 /**
@@ -230,7 +231,7 @@ export function setAuthToken(token: string): void {
  */
 export function clearAuthToken(): void {
   if (typeof window === 'undefined') return;
-  localStorage.removeItem('auth_token');
+  appStorage.removeItem('auth_token');
 }
 
 /**

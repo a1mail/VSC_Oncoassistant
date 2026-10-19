@@ -1,8 +1,18 @@
 const PORTABLE_DATABASE_FILENAME = 'oncoassistant-patient-db.json';
+import { z } from 'zod';
+import { isPortableSession } from './appStorage';
 
-function isStandaloneVariantPath(pathname: string): boolean {
-  return /diagassist_[45]\.html?$/.test(pathname.toLowerCase());
-}
+const databaseSchema = z.object({
+  version: z.literal(1),
+  savedAt: z.string(),
+  patients: z.array(z.object({
+    id: z.number().int().positive().optional(),
+    full_name: z.string(), birth_date: z.string(), gender: z.enum(['male', 'female']),
+  }).passthrough()),
+  consultations: z.record(z.string(), z.object({
+    patient_id: z.number().int().positive(), data: z.string(), date: z.string(),
+  })),
+});
 
 export interface PortablePatientRecord {
   id?: number;
@@ -87,8 +97,7 @@ export function isDiagassist4Variant(): boolean {
     return false;
   }
 
-  return window.location.protocol === 'file:'
-    || isStandaloneVariantPath(window.location.pathname);
+  return isPortableSession();
 }
 
 export function isPortablePatientStorageSupported(): boolean {
@@ -157,7 +166,7 @@ export async function choosePortablePatientStorageDirectory(): Promise<PortableP
     throw new Error('Ваш браузер не поддерживает выбор папки. Рекомендуется Microsoft Edge или Google Chrome.');
   }
 
-  const handle = await picker();
+  const handle = await picker.call(window);
   const hasPermission = await ensureDirectoryPermission(handle);
   if (!hasPermission) {
     throw new Error('Нет прав на запись в выбранную папку.');
@@ -207,33 +216,42 @@ export async function loadPortablePatientDatabase(): Promise<PortablePatientData
     return createEmptyPortableDatabase();
   }
 
-  const parsed = JSON.parse(content) as Partial<PortablePatientDatabase>;
-  return {
-    version: 1,
-    savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : new Date().toISOString(),
-    patients: Array.isArray(parsed.patients) ? parsed.patients : [],
-    consultations: parsed.consultations && typeof parsed.consultations === 'object'
-      ? parsed.consultations as Record<string, PortableConsultationRecord>
-      : {},
-  };
+  const parsed = databaseSchema.safeParse(JSON.parse(content));
+  if (!parsed.success) throw new Error('Некорректная структура базы пациентов. Исходный файл не изменен.');
+  for (const consultation of Object.values(parsed.data.consultations)) {
+    if (!z.record(z.string(), z.unknown()).safeParse(JSON.parse(consultation.data)).success) {
+      throw new Error('Некорректные данные консультации. Исходный файл не изменен.');
+    }
+  }
+  return parsed.data;
 }
 
 /**
  * Persists the patient database into the selected standalone folder.
- * The write is skipped when the HTML variant is not active or no folder is selected.
+ * A missing folder is an error in portable mode, never a false successful save.
  */
 export async function savePortablePatientDatabase(
   database: PortablePatientDatabase
 ): Promise<boolean> {
-  if (!isDiagassist4Variant() || !selectedDirectoryHandle) {
+  if (!isDiagassist4Variant()) {
     return false;
   }
+  if (!selectedDirectoryHandle) throw new Error('Выберите папку базы на флешке. Данные пока находятся только в памяти.');
+  databaseSchema.parse(database);
 
   const fileHandle = await getDatabaseFileHandle(true);
   if (!fileHandle) {
     return false;
   }
 
+  const previous = await (await fileHandle.getFile()).text();
+  if (previous.trim()) {
+    databaseSchema.parse(JSON.parse(previous));
+    const backup = await selectedDirectoryHandle.getFileHandle(`${PORTABLE_DATABASE_FILENAME}.backup`, { create: true });
+    const backupWriter = await backup.createWritable();
+    await backupWriter.write(previous);
+    await backupWriter.close();
+  }
   const writable = await fileHandle.createWritable();
   await writable.write(JSON.stringify({
     ...database,
@@ -242,4 +260,9 @@ export async function savePortablePatientDatabase(
   }, null, 2));
   await writable.close();
   return true;
+}
+
+export function disconnectPortablePatientStorage(): void {
+  selectedDirectoryHandle = null;
+  notifyPortableStorageListeners();
 }

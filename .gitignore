@@ -3,5 +3,6 @@ oncoassistant-html/
 tsconfig.tsbuildinfo
 node_modules/
 dist/
+dist-standalone/
 *.log
 .env
